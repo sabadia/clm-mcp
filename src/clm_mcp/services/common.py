@@ -31,11 +31,18 @@ _REGISTRY = get_registry()
 def get_operation(name: str) -> Operation:
     """Look up a registered operation by name, raising if it's missing.
 
+    Accepts either the canonical `{service}/{Tag}/{PathTail}` name (used by
+    the construction/team/konshub service modules) or the older unqualified
+    `{Tag}/{PathTail}` form (used by the shipment service modules, predating
+    multi-service support) — see `spec/registry.py::OperationRegistry.resolve`.
+
     A miss here means the vendored spec drifted from what a service module
     expects (see `scripts/refresh_spec.py`) — a bug to fix, not a business
     outcome to report, hence a plain exception rather than `ToolError`.
+    `AmbiguousOperationError` is a `LookupError` subclass, so it propagates
+    with the same "this is a bug" treatment without special-casing here.
     """
-    op = _REGISTRY.get(name)
+    op = _REGISTRY.resolve(name)
     if op is None:
         raise LookupError(f"Operation {name!r} not found in the registry (spec drift?).")
     return op

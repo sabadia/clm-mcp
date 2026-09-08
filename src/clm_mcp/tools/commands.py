@@ -1,6 +1,5 @@
-"""Auto-generated write tools: one MCP tool per `*Command` operation,
-registered by default — set `CLM_ENABLE_WRITES=false` to opt OUT and run
-this server read-only instead.
+"""Auto-generated write tools: one MCP tool per `*Command` operation, for
+each service opted in via `CLM_WRITE_TOOLS` — empty (none) by default.
 
 Unlike the curated read tools (hand-written, one per common workflow — see
 `tools/shipments.py` etc.) and the generic `clm_invoke` escape hatch
@@ -9,7 +8,7 @@ Command operation's resolved JSON Schema: a pydantic model is built for its
 request body, and `ToolAnnotations` are derived from the operation's name
 prefix (see PLAN.md "Write-mode annotations"). That gives every write
 operation its own properly-named, individually-discoverable tool without
-hand-writing ~59 near-identical wrappers.
+hand-writing ~181 near-identical wrappers.
 
 Trade-off: a deeply nested field (an array of objects, say) falls back to
 permissive `dict[str, Any]` / `list[dict[str, Any]]` rather than a fully
@@ -17,9 +16,19 @@ recursive schema — the API itself still validates the real shape, and
 `clm_invoke` remains available when full JSON-Schema pre-validation of a
 nested body matters more than a named, typed tool.
 
-`settings.enable_writes` defaults to `True` — every endpoint gets a tool
-with zero setup. The setting still exists as an explicit opt-out for a
-connection that should never be able to mutate live data at all.
+`settings.write_tools` (`CLM_WRITE_TOOLS`) defaults to empty — no generated
+write tools at all. With all four services loaded, generating every one of
+the 181 write operations costs ~78,000 tokens of tool-definition context on
+every single request (see PLAN.md "The tool-surface explosion"), which is
+why `clm_invoke` — always available, schema-validated, and gated by
+`settings.enable_writes` below — is the default write path instead. Set
+`CLM_WRITE_TOOLS=shipment` (or a comma-separated list, or the literal
+"all") to opt specific services back into named per-operation write tools.
+
+`settings.enable_writes` (`CLM_ENABLE_WRITES`, default `True`) is a
+separate, independent gate: it controls whether a write may **execute at
+all** — through `clm_invoke` or a generated tool — regardless of
+`CLM_WRITE_TOOLS`. Setting it `false` makes this server fully read-only.
 """
 
 from __future__ import annotations
@@ -61,6 +70,21 @@ _ANNOTATIONS_BY_VERB: dict[str, ToolAnnotations] = {
 }
 _FALLBACK_ANNOTATIONS = ToolAnnotations(destructive_hint=True, idempotent_hint=False)
 
+# Some specs mix internal-capital compounds ("KonsHub", "WareHouse") into
+# names that read better as one word: without this, `_snake_case` treats the
+# lowercase-to-uppercase boundary as a genuine word split, producing
+# `clm_kons_hub_shipment_command_...` / `clm_ware_house_command_...` instead
+# of the intended `clm_konshub_shipment_command_...` /
+# `clm_warehouse_command_...`. Applied before `_snake_case`'s own boundary
+# rules, on both tags and path tails.
+_WORD_OVERRIDES: dict[str, str] = {"KonsHub": "Konshub", "WareHouse": "Warehouse"}
+
+
+def _apply_word_overrides(name: str) -> str:
+    for original, replacement in _WORD_OVERRIDES.items():
+        name = name.replace(original, replacement)
+    return name
+
 
 def _snake_case(name: str) -> str:
     """PascalCase -> snake_case, treating a run of capitals as one acronym.
@@ -73,6 +97,7 @@ def _snake_case(name: str) -> str:
     lowercase/digit and a following capital (e.g. `ShipmentPDF` ->
     `Shipment_PDF`).
     """
+    name = _apply_word_overrides(name)
     name = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
     name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
     return name.lower()
@@ -84,14 +109,17 @@ def _tool_name(operation: Operation) -> str:
     The tag prefix is load-bearing, not decorative: several operation path
     tails repeat across tags (`SaveShipmentWizardBookingDates` exists under
     both `ShipmentCommand` and `SmartShipmentCommand`), so the tail alone
-    would collide.
+    would collide. Derived from `operation.path` (not `operation.name`,
+    which is `{service}/{Tag}/{PathTail}` and would leak a literal "/" into
+    the tool name) — no service segment: measured unique across all 181
+    write operations in all four services without one (see PLAN.md).
     """
-    path_tail = operation.name.split("/", 1)[1]
+    path_tail = operation.path.rsplit("/", 1)[-1]
     return f"clm_{_snake_case(operation.tag)}_{_snake_case(path_tail)}"
 
 
 def _derive_annotations(operation: Operation) -> ToolAnnotations:
-    path_tail = operation.name.split("/", 1)[1]
+    path_tail = operation.path.rsplit("/", 1)[-1]
     verb_match = re.match(r"[A-Z][a-z]*", path_tail)
     verb = verb_match.group(0) if verb_match else ""
     return _ANNOTATIONS_BY_VERB.get(verb, _FALLBACK_ANNOTATIONS)
@@ -160,19 +188,45 @@ def _make_tool_fn(operation: Operation, model_cls: type[BaseModel]) -> Any:
 
 
 def register(mcp: MCPServer[AppContext], settings: Settings) -> None:
-    """Register one tool per `*Command` operation — only if writes are enabled."""
+    """Register one tool per `*Command` operation, for each service in
+    `settings.write_tool_services()` — empty by default, so this is a no-op
+    unless `CLM_WRITE_TOOLS` opts a service in. Also a no-op whenever writes
+    can't execute at all (`CLM_ENABLE_WRITES=false`), regardless of
+    `CLM_WRITE_TOOLS` — no point registering a tool that would always refuse.
+    """
     if not settings.enable_writes:
         return
+    enabled_services = settings.write_tool_services()
+    if not enabled_services:
+        return
 
+    seen_tool_names: dict[str, str] = {}
     for op_summary in _REGISTRY.list_operations():
         operation = _REGISTRY.get(op_summary.name)
         if operation is None or not operation.is_command:
             continue
+        if operation.service not in enabled_services:
+            continue
+
+        tool_name = _tool_name(operation)
+        if tool_name in seen_tool_names:
+            # Measured unique across all 181 write operations in all four
+            # services during design (see PLAN.md) — a collision here means
+            # a future spec change broke that, and a silently-overwritten
+            # tool (the MCP SDK's add_tool behavior) is worse than a loud
+            # failure at startup.
+            raise ValueError(
+                f"Generated write-tool name collision: {tool_name!r} is derived from both "
+                f"{seen_tool_names[tool_name]!r} and {operation.name!r} — "
+                "tools/commands.py needs a richer naming scheme."
+            )
+        seen_tool_names[tool_name] = operation.name
+
         model_cls = _build_params_model(operation)
         tool_fn = _make_tool_fn(operation, model_cls)
         mcp.add_tool(
             tool_fn,
-            name=_tool_name(operation),
+            name=tool_name,
             description=tool_fn.__doc__,
             annotations=_derive_annotations(operation),
         )

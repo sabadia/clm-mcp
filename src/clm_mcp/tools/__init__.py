@@ -4,9 +4,9 @@
 built `MCPServer` — called from `__main__.py` after `build_server()`.
 Read-only tool modules (`meta`, the curated domains, `gateway`'s list/
 describe/invoke) register unconditionally. `commands` — one auto-generated
-tool per `*Command` operation — registers by default too
-(`settings.enable_writes` defaults to `True`); see its module docstring for
-the read-only opt-out.
+tool per `*Command` operation, per service opted into `CLM_WRITE_TOOLS` —
+is empty by default; see its module docstring and `config.py`'s
+`write_tool_services`.
 """
 
 from __future__ import annotations
@@ -18,13 +18,16 @@ from clm_mcp.server import AppContext
 from clm_mcp.tools import (
     cockpit,
     commands,
+    construction,
     equipment,
     gateway,
     handovers,
     incidents,
+    konshub,
     lean_cards,
     meta,
     shipments,
+    team,
 )
 
 
@@ -37,5 +40,8 @@ def register_all(mcp: MCPServer[AppContext], settings: Settings) -> None:
     lean_cards.register(mcp)
     handovers.register(mcp)
     cockpit.register(mcp)
+    construction.register(mcp)
+    team.register(mcp)
+    konshub.register(mcp)
     gateway.register(mcp)
     commands.register(mcp, settings)

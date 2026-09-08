@@ -31,16 +31,20 @@ logger = get_logger(__name__)
 
 SERVER_NAME = "clm-mcp"
 SERVER_INSTRUCTIONS = (
-    "Tools for the SELISE CLM Shipment API: shipments, incidents, site equipment, lean "
-    "cards (working packages), material handovers, and timelines. Query tools are "
-    "read-only and safe to call freely; write tools (one per write operation, e.g. "
-    "clm_shipment_command_discard_shipment) mutate live data and are annotated accordingly — "
-    "treat destructive-hinted tools with care regardless of what the name sounds like. Write "
-    "tools are present by default; set CLM_ENABLE_WRITES=false to run this server read-only "
-    "instead. Call clm_whoami first to see the authenticated user, site, and role. For anything "
-    "not covered by a named tool, use clm_list_operations / clm_describe_operation / clm_invoke "
-    "to reach the rest of the API surface — every operation is reachable that way even without "
-    "a dedicated tool."
+    "Tools for four CLM business services: shipment (shipments, incidents, site equipment, "
+    "lean cards, material handovers, timelines), construction (materials, zones, site "
+    "structure, wiki), team (teams, members, join requests, invitations), and konshub (the "
+    "warehouse/logistics dashboard: incoming/outgoing shipments, deliveries, storage). Query "
+    "tools are read-only and safe to call freely. Writes (one per *Command operation across "
+    "all four services) default to going through clm_invoke — no named write tool is "
+    "registered unless CLM_WRITE_TOOLS opts a service in (e.g. CLM_WRITE_TOOLS=shipment or "
+    "'all'); either way, set CLM_ENABLE_WRITES=false to refuse every write outright. A named "
+    "write tool's annotations (e.g. clm_shipment_command_discard_shipment's destructive_hint) "
+    "tell you its risk regardless of how it's invoked. Call clm_whoami first to see the "
+    "authenticated user, site, and role. For anything not covered by a named tool — most "
+    "operations, by design, to keep the always-visible tool list small — use "
+    "clm_list_operations(service=...) / clm_describe_operation / clm_invoke to reach the rest "
+    "of the API surface across all four services."
 )
 
 
@@ -82,8 +86,9 @@ def make_lifespan(
             api_client = ClmApiClient(resolved_settings, http_client, token_manager)
             logger.info(
                 "server.lifespan_started",
-                api_base_url=resolved_settings.api_base_url,
+                api_root_url=resolved_settings.api_root_url,
                 enable_writes=resolved_settings.enable_writes,
+                write_tool_services=sorted(resolved_settings.write_tool_services()),
             )
             try:
                 yield AppContext(

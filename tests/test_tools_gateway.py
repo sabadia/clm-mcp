@@ -78,7 +78,7 @@ async def test_list_operations_filters_by_search(mock_router: respx.MockRouter) 
         result = await client.call_tool("clm_list_operations", {"search": "getshipmentbyid"})
 
     names = [op["name"] for op in result.structured_content["result"]]
-    assert names == ["ShipmentQuery/GetShipmentById"]
+    assert names == ["shipment/ShipmentQuery/GetShipmentById"]
 
 
 async def test_describe_operation_returns_resolved_schema(mock_router: respx.MockRouter) -> None:
@@ -179,6 +179,54 @@ async def test_invoke_refuses_command_when_writes_disabled(
     assert result.is_error
     assert "write operation" in str(result.content)
     assert route.call_count == 0
+
+
+async def test_list_operations_filters_by_service(mock_router: respx.MockRouter) -> None:
+    client, _ = build()
+    async with client:
+        result = await client.call_tool("clm_list_operations", {"service": "konshub", "limit": 500})
+
+    rows = result.structured_content["result"]
+    assert rows
+    assert all(row["service"] == "konshub" for row in rows)
+    assert len(rows) == 86  # pinned in PLAN.md / test_full_coverage.py
+
+
+@pytest.mark.parametrize("service", ["shipment", "construction", "team", "konshub"])
+async def test_test_tag_is_unreachable_in_every_service(
+    mock_router: respx.MockRouter, service: str
+) -> None:
+    """GetUserData leaks super-admin credentials upstream in all four
+    services (see PLAN.md) — none of them may be reachable, by either the
+    canonical qualified name or the unqualified alias."""
+    client, _ = build()
+    async with client:
+        by_canonical = await client.call_tool(
+            "clm_describe_operation", {"operation": f"{service}/Test/GetUserData"}
+        )
+        by_unqualified = await client.call_tool(
+            "clm_describe_operation", {"operation": "Test/GetUserData"}
+        )
+
+    assert by_canonical.is_error
+    assert "Unknown operation" in str(by_canonical.content)
+    assert by_unqualified.is_error
+    assert "Unknown operation" in str(by_unqualified.content)
+
+
+async def test_describe_operation_accepts_canonical_qualified_name(
+    mock_router: respx.MockRouter,
+) -> None:
+    """A newer caller can pass the fully-qualified `{service}/{tag}/{op}`
+    form directly, without relying on unqualified-name uniqueness."""
+    client, _ = build()
+    async with client:
+        result = await client.call_tool(
+            "clm_describe_operation", {"operation": "shipment/ShipmentQuery/GetShipmentById"}
+        )
+
+    assert not result.is_error
+    assert result.structured_content["service"] == "shipment"
 
 
 async def test_invoke_allows_command_when_writes_enabled(mock_router: respx.MockRouter) -> None:

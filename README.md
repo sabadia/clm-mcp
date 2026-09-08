@@ -1,23 +1,34 @@
 # clm-mcp
 
-An [MCP](https://modelcontextprotocol.io) server exposing the SELISE **CLM Shipment**
-REST API (`ClmShipmentWebService`) to MCP clients — Claude Code, Claude Desktop, Cursor,
-or any other MCP-compatible tool.
+An [MCP](https://modelcontextprotocol.io) server exposing **four SELISE CLM business
+services** — shipment, construction, team, and konshub — to MCP clients: Claude Code,
+Claude Desktop, Cursor, or any other MCP-compatible tool.
 
-- **Every one of the 121 non-`Test` operations in the spec is reachable, by default, with zero
-  configuration** — 82 tools total:
-  - **23 read-only tools** covering shipments, incidents, site equipment, lean cards
-    (working packages), material handovers, cockpit dashboards, and weather.
-  - **59 auto-generated write tools**, one per `*Command` operation (create/update/delete/
-    discard/...), individually named and annotated by risk.
+- **Every one of the 364 non-`Test` operations across all four services is reachable, by
+  default, with zero configuration** — 47 read-only tools by default:
+  - **2 identity/discovery tools** (`clm_whoami`, `clm_list_enums`) plus **42 curated
+    domain tools**: 18 covering shipment (shipments, incidents, site equipment, lean
+    cards, material handovers, cockpit dashboards, weather), and 8 each for construction
+    (materials, zones, site structure, wiki search), team (teams, members, join
+    requests, invitations, contacts), and konshub (the warehouse/logistics dashboard:
+    incoming/outgoing shipments, deliveries, storage, warehouse zones).
   - **A full-coverage gateway** (`clm_list_operations` / `clm_describe_operation` /
-    `clm_invoke`) that reaches literally every operation — including the ~44 less-common query
-    operations without a hand-written tool — generically, with pre-flight schema validation.
-  - Set `CLM_ENABLE_WRITES=false` to opt **out** of the 59 write tools and run strictly
-    read-only instead.
-- Proactive token refresh for a **7-minute** access-token lifetime, correct handling of
-  an API that returns HTTP 200 even for business failures, and response shaping so
-  large DTOs don't flood the model's context.
+    `clm_invoke`) that reaches literally every operation in all four services —
+    including all 181 write (`*Command`) operations and the 141 less-common query
+    operations without a hand-written tool (322 operations total via the gateway) —
+    generically, with pre-flight schema validation. **This is the default way to
+    execute a write** — see below.
+  - **181 auto-generated write tools exist but are opt-in**, one per `*Command`
+    operation (create/update/delete/discard/...), individually named and annotated by
+    risk. Registering all of them by default would add ~78,000 tokens of
+    tool-definition context to *every request* — set `CLM_WRITE_TOOLS=shipment` (or a
+    comma-separated list, or `all`) to opt specific services into named write tools.
+  - Set `CLM_ENABLE_WRITES=false` to refuse every write outright — through `clm_invoke`
+    *or* a named write tool — and run strictly read-only instead.
+- Proactive token refresh for a **7-minute** access-token lifetime (shared across all
+  four services — one login, one token), correct handling of an API that returns HTTP
+  200 even for business failures, and response shaping so large DTOs don't flood the
+  model's context.
 
 ---
 
@@ -124,10 +135,15 @@ All variables use the `CLM_` prefix (see `.env.example` for the full, commented 
 | `CLM_REFRESH_TOKEN` | — | Refresh token (Option B) |
 | `CLM_USERNAME` / `CLM_PASSWORD` | — | Password grant (Option B) |
 | `CLM_CREDENTIALS_PATH` | `~/.config/clm-mcp/credentials.json` | Where `clm-mcp login` stores its token |
-| `CLM_API_BASE_URL` | `https://msblocks.selisestage.com/api/business-clm-shipment` | Business API base |
-| `CLM_IDENTITY_TOKEN_URL` | `https://clm.selisestage.com/api/identity/v25/identity/token` | Identity/token endpoint |
+| `CLM_API_ROOT_URL` | `https://msblocks.selisestage.com/api` | API root — each service's base is `{this}/business-clm-{shipment,construction,team,konshub}` |
+| `CLM_API_BASE_URL` | — | **Deprecated**: shipment-only base URL override, kept for pre-multi-service configs. Equivalent to `CLM_API_BASE_URL_OVERRIDES='{"shipment": "..."}'`. |
+| `CLM_API_BASE_URL_OVERRIDES` | `{}` | Per-service base URL overrides, as a JSON object: `{"konshub": "https://..."}` |
+| `CLM_IDENTITY_TOKEN_URL` | `https://clm.selisestage.com/api/identity/v25/identity/token` | Identity/token endpoint (shared by all four services) |
 | `CLM_IDENTITY_ORIGIN` | `https://clm.selisestage.com/` | Required `Origin` header for the identity endpoint |
-| `CLM_ENABLE_WRITES` | `true` | Register the 59 auto-generated write tools. Set to `false` to opt out and run read-only. |
+| `CLM_ENABLE_WRITES` | `true` | Whether a `*Command` operation may execute at all, through `clm_invoke` **or** a named write tool. Set to `false` to refuse every write and run read-only. |
+| `CLM_WRITE_TOOLS` | *(empty)* | Which services get a **named tool per `*Command` operation**, in addition to `clm_invoke` (which always works). Comma-separated slugs (`shipment`, `construction`, `team`, `konshub`) or `all`. Empty by default — see [Write tools](#write-tools). |
+| `CLM_API_CONNECT_TIMEOUT_SECONDS` | `10` | TCP connect timeout for business API requests |
+| `CLM_API_READ_TIMEOUT_SECONDS` | `60` | Read timeout for business API requests — some operations (e.g. `clm_get_material_usage`) take several seconds; raise this if you see timeouts rather than lowering it |
 | `CLM_TOKEN_REFRESH_SKEW_SECONDS` | `90` | Refresh this many seconds before actual expiry |
 | `CLM_MAX_RESPONSE_BYTES` | `50000` | Byte cap before a list response is truncated |
 | `CLM_LOG_LEVEL` | `INFO` | Logging level (always written to **stderr**, never stdout) |
@@ -191,26 +207,82 @@ All variables use the `CLM_` prefix (see `.env.example` for the full, commented 
 | `clm_get_cockpit_weekly_counts` | Weekly shipment count grid for a site's unloading zones. |
 | `clm_get_weather` | Daily weather records for a site within a date range. |
 
-### Full-coverage gateway
-
-The curated tools above cover the common workflows. These three reach everything
-else in the spec (~100 more read/write operations) at the cost of the caller
-constructing its own request body:
+### Construction
 
 | Tool | Description |
 |---|---|
-| `clm_list_operations` | List operations by tag and/or search — e.g. `tag="ShipmentCommand"`. |
+| `clm_list_materials` | Paginated, searchable material list for a site. |
+| `clm_get_material` | A single material by its item id. |
+| `clm_get_material_usage` | A material's shipment usage totals, grouped by status. |
+| `clm_list_zones` | Zones belonging to a site or shared at the project level. |
+| `clm_get_zone` | A zone by id, with equipment, way-points, and related areas. |
+| `clm_list_site_locations` | A site's zones as locations, with direction way-points. |
+| `clm_get_site_structure` | A site's structure (buildings/floors/laydowns), hierarchically. |
+| `clm_search_wiki` | Free-text search over wiki page content. |
+
+### Team
+
+| Tool | Description |
+|---|---|
+| `clm_list_teams` | CLM teams for a site, own teams surfaced first by default. |
+| `clm_list_team_members` | Members of (or unassigned candidates for) a team. |
+| `clm_list_vendor_teams` | Vendor teams for a site. |
+| `clm_list_join_requests` | Team join requests for a site, role-scoped to the caller. |
+| `clm_get_join_request` | Full detail of a single team join request. |
+| `clm_list_site_responsible_persons` | Responsible-person contacts for a site (e.g. shipment sender/recipient pickers). |
+| `clm_get_person_info` | Extended profile combining Person/User/ClmTeamMember/temp-role data. |
+| `clm_list_invitations` | Pending and past user invitations for a site. |
+
+### KonsHub (warehouse/logistics dashboard)
+
+| Tool | Description |
+|---|---|
+| `clm_list_konshub_incoming_shipments` | Incoming shipments in a date window, for the dashboard. |
+| `clm_list_konshub_outgoing_shipments` | Outgoing shipments in a date window, for the dashboard. |
+| `clm_list_konshub_deliveries` | Shipments for one tab of the Deliveries screen. |
+| `clm_count_konshub_deliveries` | Deliveries-screen tab counts plus a grand total. |
+| `clm_search_konshub_deliveries` | Free-text search over every Deliveries tab in one call. |
+| `clm_get_konshub_shipment_comments` | Comments on a KonsHub shipment. |
+| `clm_list_storage_zones` | Storage zones matching an optional combination of filters. |
+| `clm_list_warehouse_zones` | Zones belonging to a warehouse (scoped by `warehouse_id`, not a site). |
+
+*(KonsHub tool names carry a `konshub_` infix where they'd otherwise collide with a
+shipment tool name — the shipment service already owns the unprefixed names.)*
+
+### Full-coverage gateway
+
+The curated tools above cover the common workflows across all four services. These
+three reach everything else — including all 181 write operations — at the cost of the
+caller constructing its own request body:
+
+| Tool | Description |
+|---|---|
+| `clm_list_operations` | List operations, filterable by `service` (`shipment`/`construction`/`team`/`konshub`), `tag`, and/or free-text search. |
 | `clm_describe_operation` | Get an operation's resolved JSON Schema request/response shape. |
-| `clm_invoke` | Execute any listed operation. Validates `params` against its schema before the HTTP call; refuses a `*Command` if the server was started with `CLM_ENABLE_WRITES=false`. |
+| `clm_invoke` | Execute any listed operation — **the default way to run a write**. Validates `params` against its schema before the HTTP call; refuses a `*Command` if the server was started with `CLM_ENABLE_WRITES=false`. |
 
-`Test/*` operations (see [Security](#security)) are excluded from all three — they
-never appear in `clm_list_operations` and `clm_invoke` refuses them by name.
+Operation names are `{tag}/{operation}` (e.g. `"ShipmentQuery/GetShipmentById"`) when
+unambiguous across all four services — true for every operation today — or the fully
+qualified `{service}/{tag}/{operation}` form always works
+(`"konshub/KonsHubShipmentCommand/SplitKonsHubShipment"`).
 
-### Write tools (on by default — set `CLM_ENABLE_WRITES=false` to disable)
+`Test/*` operations (see [Security](#security)) are excluded from all three, in every
+service — they never appear in `clm_list_operations` and `clm_invoke` refuses them by name.
 
-One tool per `*Command` operation (59 total), named `clm_<tag>_<operation>` — e.g.
-`clm_shipment_command_discard_shipment`, `clm_incident_command_create_incident`. Each
-is generated from that operation's resolved request schema and annotated by its verb:
+### Write tools
+
+**Opt-in, empty by default** — set `CLM_WRITE_TOOLS=shipment` (or a comma-separated list
+of `shipment`/`construction`/`team`/`konshub`, or the literal `all`) to get a **named**
+tool per `*Command` operation for that service, in addition to the always-available
+`clm_invoke`. Registering all 181 by default would add ~78,000 tokens of
+tool-definition context to every single request (measured: 59 shipment write tools
+alone cost ~27,000 tokens) — `clm_invoke` is the default write path specifically to
+avoid that, and is already schema-validated and gated by `CLM_ENABLE_WRITES` the same
+way a named tool would be.
+
+When enabled, each is named `clm_<tag>_<operation>` — e.g.
+`clm_shipment_command_discard_shipment`, `clm_konshub_shipment_command_split_konshub_shipment` —
+generated from that operation's resolved request schema and annotated by its verb:
 
 | Verb prefix | Annotation |
 |---|---|
@@ -223,10 +295,16 @@ A deeply nested field (an array of objects, say) falls back to a permissive JSON
 object rather than a fully-typed nested schema — the API itself still validates it.
 Use `clm_invoke` instead when you want full JSON-Schema pre-validation of a nested body.
 
-To see the exact generated names, ask a connected client to list its tools, or run:
+**`CLM_WRITE_TOOLS` and `CLM_ENABLE_WRITES` are independent settings**: the former
+controls whether a *named tool exists*; the latter controls whether a write can
+*execute at all* (through `clm_invoke` or a named tool). `CLM_ENABLE_WRITES=false`
+always wins — there's no point in a named tool that would only ever refuse.
+
+To see the exact generated names for a given `CLM_WRITE_TOOLS` value, ask a connected
+client to list its tools, or run:
 
 ```bash
-npx @modelcontextprotocol/inspector uv run clm-mcp
+CLM_WRITE_TOOLS=all npx @modelcontextprotocol/inspector uv run clm-mcp
 ```
 
 ---
@@ -235,17 +313,23 @@ npx @modelcontextprotocol/inspector uv run clm-mcp
 
 ```
 src/clm_mcp/
-├── __main__.py        CLI: clm-mcp / clm-mcp login / clm-mcp --http
-├── config.py           pydantic-settings, CLM_ env prefix
-├── server.py           build_server(): MCPServer + typed lifespan
-├── enums.py            domain enums (see Known limitations)
-├── auth/               token lifecycle: models, on-disk store, TokenManager
-├── api/                HTTP client (retry policy) + envelope unwrapping
-├── spec/               vendored OpenAPI spec, operation registry, response shaping
-├── services/           composition layer between tools and api/ — no business
-│                       logic in tool functions
-└── tools/              MCP tool registration: meta, curated domains, gateway,
-                        auto-generated write tools
+├── __main__.py         CLI: clm-mcp / clm-mcp login / clm-mcp --http
+├── config.py            pydantic-settings, CLM_ env prefix, per-service base_url_for()
+├── services_catalog.py  the 4 CLM services: slug, spec file, gateway segment, path prefix
+├── server.py            build_server(): MCPServer + typed lifespan
+├── enums.py             domain enums (see Known limitations)
+├── auth/                token lifecycle: models, on-disk store, TokenManager (shared
+│                        across all 4 services — one identity issuer)
+├── api/                 HTTP client (retry policy, per-operation service routing) +
+│                        envelope unwrapping
+├── spec/
+│   ├── specs/           vendored OpenAPI specs, one per service
+│   ├── registry.py      merges all 4 specs into one operation index
+│   └── shaping.py        response shaping (null-stripping, projection, truncation)
+├── services/            composition layer between tools and api/ — no business
+│                        logic in tool functions; one module per service
+└── tools/               MCP tool registration: meta, curated domains (one module per
+                         service), gateway, auto-generated write tools
 ```
 
 **Auth.** The identity service issues a **7-minute** access token. `TokenManager`
@@ -276,8 +360,9 @@ uv run pytest              # full test suite
 uv run ruff check .        # lint
 uv run ruff format .       # format
 uv run mypy src/clm_mcp/   # strict type check
-uv run python scripts/refresh_spec.py         # check the vendored spec for drift
-uv run python scripts/refresh_spec.py --write # ...and apply the update
+uv run python scripts/refresh_spec.py                    # check all 4 vendored specs for drift
+uv run python scripts/refresh_spec.py --write              # ...and apply the update, all 4
+uv run python scripts/refresh_spec.py --service konshub     # just one service
 ```
 
 ```bash
@@ -301,33 +386,54 @@ entry point is a Typer CLI, not a module-level `MCPServer` instance the Inspecto
 - **Tokens are never logged.** A structlog processor redacts `access_token`,
   `refresh_token`, `password`, and `Authorization` from every log line, regardless of
   where in a nested structure they appear.
-- **`Test/*` operations are permanently excluded** from this server (at the registry
-  level — every tool, `clm_list_operations`, and `clm_invoke` all route through the
-  same exclusion). `Test/GetUserData` on the upstream staging API returns
-  super-admin credentials in plaintext to any authenticated caller; this is an
-  upstream vulnerability that should be reported and fixed independently of this
-  client — excluding it here only stops this server from being a vector for it, it
-  does not remediate the underlying exposure.
-- **Write tools are on by default** (every `*Command` operation gets a tool with zero
-  setup) and individually annotated so an MCP client can prompt for confirmation before a
-  destructive call — set `CLM_ENABLE_WRITES=false` for a connection that should never be
-  able to mutate live data at all.
+- **`Test/*` operations are permanently excluded, in all four services** (at the
+  registry level — every tool, `clm_list_operations`, and `clm_invoke` all route
+  through the same exclusion). `Test/GetUserData` on the upstream staging API returns
+  super-admin credentials in plaintext to any authenticated caller, **confirmed present
+  in shipment, construction, team, and konshub alike**; this is an upstream
+  vulnerability that should be reported and fixed independently of this client —
+  excluding it here only stops this server from being a vector for it, it does not
+  remediate the underlying exposure.
+- **Writes execute only when `CLM_ENABLE_WRITES` is true** (the default) — through
+  `clm_invoke` or a named write tool alike. Named write tools are themselves opt-in
+  per service (`CLM_WRITE_TOOLS`, empty by default) and individually annotated so an
+  MCP client can prompt for confirmation before a destructive call. Set
+  `CLM_ENABLE_WRITES=false` for a connection that should never be able to mutate live
+  data at all, regardless of `CLM_WRITE_TOOLS`.
 
 ## Known limitations
 
-- **Several domain enums have no documented names.** `ShipmentStatus` (13 values),
-  `LeanCardStatus`, `Severity`, `ShipmentGroupingType`, `AccessType`, and
+- **Several shipment-service domain enums have no documented names.** `ShipmentStatus`
+  (13 values), `LeanCardStatus`, `Severity`, `ShipmentGroupingType`, `AccessType`, and
   `AvailableDateGetType` are exposed as bare integers in the OpenAPI spec with no
   labels. `enums.py` ships them as explicit `UNKNOWN_n` placeholders (not a guess —
   see that module's docstring) and `clm_list_enums` surfaces the known int ranges.
   Tools accept either the placeholder name or the raw int. Replace the placeholders
   with real names (from the CLM front-end source or a domain expert) when available.
-- **The vendored spec's `servers[0].url` is wrong** (plain HTTP, missing the gateway
-  path prefix) — this server hardcodes the verified-correct
-  `CLM_API_BASE_URL` default instead of reading it from the spec.
-- **No `securitySchemes` in the spec** — the Bearer scheme is inferred from testing
-  against the live API, not documented. If the gateway ever requires an additional
-  header, `api/client.py` is the one place to add it.
+  **Construction, team, and konshub have similar undocumented int fields** (e.g.
+  konshub's `ApprovalStatus`/`CommissionedStatus`, team's `TeamType`/`RequestType`,
+  construction's `LocationType`/`WKTType`) that are **not yet stubbed** — unlike
+  `ShipmentStatus`, none of them have live-observed cardinality evidence yet, and
+  guessing a range would be worse than leaving them as plain ints reachable via
+  `clm_invoke`/`clm_describe_operation`.
+- **Two of the four specs contain cyclic schemas** (konshub's `KonsHubShipment`
+  self-references via `PreviousKonsHubShipments`; construction's `Reservation` /
+  `ReservationObject` / `ReservationObjectSpecificDate` form a mutual cycle). The
+  registry breaks a cycle with a permissive `{"type": "object"}` placeholder at the
+  point it closes rather than failing to build — four operations
+  (`KonsHubShipmentCommand/SplitKonsHubShipment` and three query operations) lose
+  static pre-validation on the recursive field specifically; the API itself still
+  validates the real shape at call time.
+- **The vendored specs' `servers[0].url` is wrong in all four** (plain HTTP, missing
+  the gateway path prefix) — this server derives each service's base URL from
+  `CLM_API_ROOT_URL` instead of reading it from the spec.
+- **No `securitySchemes` in any of the four specs** — the Bearer scheme is inferred
+  from testing against the live API, not documented. If a gateway ever requires an
+  additional header, `api/client.py` is the one place to add it.
+- **Construction has inconsistent `SiteId` casing** across operations (`SiteId`,
+  `siteId`, `Siteid`, `SiteIds`) — each curated construction tool uses the exact
+  casing its own operation declares; don't assume `SiteId` blindly when using
+  `clm_invoke` against a construction operation not covered by a curated tool.
 - **`clm_list_material_handovers`'s `status` is required**, despite the spec marking the
   underlying field `nullable: true` — the API rejects both a missing and an empty/null
   `Status` with `'Status' must not be empty.` `status` is matched as a literal value, not
@@ -336,19 +442,57 @@ entry point is a Typer CLI, not a module-level `MCPServer` instance the Inspecto
   confirmed live to filter correctly (returned all 35 matching handovers on that site).
   `Open`, `Completed`, `Pending`, `Draft`, and `Closed` are accepted without a validation
   error but their filtering semantics were not confirmed against real data.
-- **Two upstream endpoints return a 500 instead of a clean business error**, reproduced
-  identically via raw `curl` (not an artifact of this client): `LeanCardQuery/GetWorkingPackages`
-  and `GetWorkingPackagesCount` (`Object reference not set to an instance of an object`), and
-  `TimelineQuery/GetShipmentTimelineById` for a nonexistent shipment id (`Exception has been
-  thrown by the target of an invocation`). `clm_list_working_packages`,
-  `clm_count_working_packages`, and `clm_get_shipment_timeline` surface these faithfully as
-  `ToolError`s — there is nothing to fix client-side.
+- **One specific staging site (the account's default/JWT-scoped site,
+  `68BC0C11-963F-46CB-AF93-267B50ABCCAF`, "Scclm Team") has corrupted or incomplete data that
+  makes several otherwise-healthy operations throw generic exceptions when scoped to it** —
+  confirmed by re-running the *exact same operations* against a properly-configured site (e.g.
+  "KonsHub Test Site 1") and getting clean, correct results both times. This was initially
+  mistaken for universal upstream bugs during an earlier pass; a broader real-data test across
+  multiple sites corrected that. Affected on that one site only:
+  `LeanCardQuery/GetWorkingPackages`/`GetWorkingPackagesCount` (shipment),
+  `ClmTeamQuery/GetTeamList` and `GetVendorTeams` (team — the latter's error message,
+  `"Provided SiteId does not exists"`, really means "this site isn't vendor-team-scoped"),
+  `KonsHubShipmentQuery/GetDashboardIncommingShipmentList`/`GetDashboardOutgoingShipmentList`
+  (konshub), and `ZoneCommand/CreateZone` (construction, `"The site does not exist"` — this site
+  isn't construction-zone-scoped). If a query in one of these services fails ambiguously, try a
+  different `site_id` before concluding the API itself is broken.
+- **`TimelineQuery/GetShipmentTimelineById` returns a 500 instead of a clean 404** for a
+  genuinely nonexistent shipment id — confirmed independent of which site is used, reproduced
+  via raw `curl`. `clm_get_shipment_timeline` surfaces this faithfully as a `ToolError`.
+- **`ClmTeamQuery/GetSiteResponsiblePersons`'s `TotalCount` does not track its `Data` array
+  length at all** (observed both `TotalCount: 1` with 0 real rows, and `TotalCount: 1` with 7
+  real rows), confirmed live on more than one site — a genuine API defect, not a client bug.
+  Treat this operation's `total_count` as unreliable; trust `returned`/`data` instead.
+  `clm_list_site_responsible_persons` is affected.
+- **`ConstructionManagementQuery/GetMaterialUsagesById` always reports `IsSuccess: false`, even
+  on a genuine successful lookup** — confirmed live with two different real `MaterialId`s on two
+  different sites (and independently by the user with their own payload): `Data` is populated
+  and correct despite the false flag, and only a truly nonexistent `MaterialId` returns
+  `Data: null`. **Handled transparently**: `api/envelope.py` special-cases exactly this one
+  operation (by its canonical name) to treat a populated `Data` as success regardless of the
+  flag, so `clm_get_material_usage` works normally — a null `Data` is still correctly treated as
+  failure. This operation is also noticeably slow (observed 3–12s) — worth knowing if you're
+  tuning `CLM_API_READ_TIMEOUT_SECONDS` down from its 60s default.
+- **Team and konshub curated list tools, plus `clm_list_materials` (construction), use
+  one-based pagination** (`page_number=1` is the first page) — unlike shipment/most other
+  construction tools' zero-based convention. Confirmed live: `GetJoinRequestList`, `GetTeamList`,
+  `GetMaterialList`, and `GetDeliveriesTabShipmentList` all compute
+  `skip = (PageNumber - 1) * PageSize` internally and reject `PageNumber=0` with a 500. Each
+  curated tool's own `page_number` default and description already reflect the correct
+  convention for that operation — this only matters if you override `page_number` explicitly.
+- **`clm_get_cockpit_weekly_counts` rejects a date window wider than 92 days.** The underlying
+  API returns one entry per *day* with no size cap of its own — confirmed live, a 2020–2027
+  window returned ~530,000 bytes (over 10x `CLM_MAX_RESPONSE_BYTES`'s default) with zero
+  truncation, since it's an object response rather than a list one. The 92-day cap is enforced
+  before the HTTP call, with a clear `ToolError` telling the caller to narrow the range.
 
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
 | `No CLM credentials found` | Run `clm-mcp login`, or set `CLM_REFRESH_TOKEN` / `CLM_USERNAME`+`CLM_PASSWORD`. |
+| A `clm_<tag>_command_<op>` write tool is missing | `CLM_WRITE_TOOLS` doesn't include that service (empty by default — see [Write tools](#write-tools)). The write still works via `clm_invoke`; set `CLM_WRITE_TOOLS=<service>` if you want it named too. |
+| `clm_invoke` refuses a write with "CLM_ENABLE_WRITES=false" | That's the real read-only gate — `CLM_WRITE_TOOLS` only controls whether a *named* tool exists, it never gates execution. |
 | `Incorrect username or password.` | Check the credentials themselves against the CLM login page. |
 | `The refresh token was rejected` | It expired or was revoked — run `clm-mcp login` again. |
 | A tool call is missing/behaves oddly after an upstream API change | Run `scripts/refresh_spec.py` to check for spec drift, then grep `src/clm_mcp/tools/`/`services/` for the affected operation name before applying `--write`. |

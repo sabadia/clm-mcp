@@ -28,7 +28,8 @@ def make_settings() -> Settings:
 
 def query_op(name: str = "ShipmentQuery/GetShipmentById", method: str = "post") -> Operation:
     return Operation(
-        name=name,
+        name=f"shipment/{name}",
+        service="shipment",
         method=method,
         path=f"/ClmShipmentWebService/{name.split('/', 1)[1]}",
         tag=name.split("/", 1)[0],
@@ -41,7 +42,8 @@ def query_op(name: str = "ShipmentQuery/GetShipmentById", method: str = "post") 
 
 def command_op(name: str = "ShipmentCommand/DiscardShipment") -> Operation:
     return Operation(
-        name=name,
+        name=f"shipment/{name}",
+        service="shipment",
         method="post",
         path=f"/ClmShipmentWebService/{name.split('/', 1)[1]}",
         tag=name.split("/", 1)[0],
@@ -126,6 +128,41 @@ async def test_get_operation_sends_query_params(
 
     assert result == {"Id": "abc"}
     assert dict(route.calls[0].request.url.params) == {"shipmentId": "abc"}
+
+
+async def test_operation_routes_to_its_own_services_gateway(
+    http_client: httpx.AsyncClient, token_manager: AsyncMock
+) -> None:
+    """`operation.service` (not a single fixed base URL) drives routing —
+    a konshub operation must hit the konshub gateway, and a shipment
+    operation must still hit the shipment gateway, from the same client."""
+    client = ClmApiClient(make_settings(), http_client, token_manager)
+    konshub_op = Operation(
+        name="konshub/KonsHubShipmentQuery/GetLogs",
+        service="konshub",
+        method="post",
+        path="/ClmKonshubWebService/KonsHubShipmentQuery/GetLogs",
+        tag="KonsHubShipmentQuery",
+        summary="",
+        parameters=(),
+        request_schema={"type": "object", "properties": {}},
+        response_schema=None,
+    )
+    shipment_op = query_op()
+
+    with respx.mock(assert_all_called=True) as mock:
+        konshub_route = mock.post(
+            "https://msblocks.selisestage.com/api/business-clm-konshub"
+            "/ClmKonshubWebService/KonsHubShipmentQuery/GetLogs"
+        ).mock(return_value=httpx.Response(200, json=success_body([])))
+        shipment_route = mock.post(f"{API_BASE_URL}{shipment_op.path}").mock(
+            return_value=httpx.Response(200, json=success_body({"Id": "abc"}))
+        )
+        await client.call(konshub_op, {})
+        await client.call(shipment_op, {"ShipmentId": "abc"})
+
+    assert konshub_route.called
+    assert shipment_route.called
 
 
 # --------------------------------------------------------------------------

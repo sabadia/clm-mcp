@@ -79,6 +79,21 @@ def test_login_with_bad_refresh_token_fails_cleanly() -> None:
     assert not settings.credentials_path.exists()
 
 
+def test_run_rejects_unknown_write_tools_service_before_starting_the_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLM_WRITE_TOOLS naming an unknown service must fail fast with a clear
+    CLI message, never reaching server.run() (which would otherwise block
+    on stdio and hang this test)."""
+    monkeypatch.setenv("CLM_WRITE_TOOLS", "not-a-real-service")
+    get_settings.cache_clear()
+
+    result = runner.invoke(cli_module.app, [])
+
+    assert result.exit_code == 1
+    assert "unknown service" in result.output
+
+
 def test_login_identity_service_unreachable() -> None:
     settings = get_settings()
     with respx.mock(assert_all_called=True) as mock:

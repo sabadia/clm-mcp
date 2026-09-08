@@ -112,7 +112,7 @@ async def test_one_session_many_tools_shares_a_single_token() -> None:
             ops = await client.call_tool("clm_list_operations", {"search": "getshipmentbyid"})
             assert not ops.is_error
             op_names = [o["name"] for o in ops.structured_content["result"]]
-            assert op_names == ["ShipmentQuery/GetShipmentById"]
+            assert op_names == ["shipment/ShipmentQuery/GetShipmentById"]
 
             described = await client.call_tool(
                 "clm_describe_operation", {"operation": "ShipmentQuery/GetShipmentById"}
@@ -168,7 +168,7 @@ async def test_401_mid_session_recovers_transparently() -> None:
 async def test_full_tool_catalog_is_internally_consistent() -> None:
     """Every registered tool's name is unique and every write tool is
     correctly annotated — a final consistency check on the whole assembled
-    server, read-only and write-enabled."""
+    server with every service's write tools opted in (CLM_WRITE_TOOLS=all)."""
     with respx.mock(assert_all_called=False) as mock:
         mock.post(IDENTITY_URL).mock(
             return_value=httpx.Response(
@@ -187,6 +187,7 @@ async def test_full_tool_catalog_is_internally_consistent() -> None:
             identity_token_url=IDENTITY_URL,
             api_base_url=API_BASE_URL,
             enable_writes=True,
+            write_tools="all",
         )
         server = build_server(settings)
         register_all(server, settings)
@@ -196,8 +197,43 @@ async def test_full_tool_catalog_is_internally_consistent() -> None:
 
     names = [t.name for t in tools.tools]
     assert len(names) == len(set(names))
-    assert len(names) > 80  # curated + meta + gateway + all generated command tools
+    assert len(names) > 200  # curated + meta + gateway + all 181 generated command tools
 
     for tool in tools.tools:
         if "_command_" in tool.name:
             assert tool.annotations is not None, f"{tool.name} is missing annotations"
+
+
+async def test_default_tool_catalog_stays_small_without_write_tools_opt_in() -> None:
+    """The gateway-first default (PLAN.md "Approved design decisions"): with
+    CLM_WRITE_TOOLS unset, the whole point of this design is that the
+    catalog stays small even though writes can still execute through
+    clm_invoke."""
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post(IDENTITY_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "access_token": make_jwt(),
+                    "refresh_token": "rt",
+                    "token_type": "Bearer",
+                    "expires_in": 420,
+                },
+            )
+        )
+
+        settings = Settings(
+            refresh_token="rt",
+            identity_token_url=IDENTITY_URL,
+            api_base_url=API_BASE_URL,
+        )
+        server = build_server(settings)
+        register_all(server, settings)
+
+        async with Client(server) as client:
+            tools = await client.list_tools()
+
+    names = [t.name for t in tools.tools]
+    assert len(names) == len(set(names))
+    assert not any("_command_" in name for name in names)
+    assert len(names) < 60

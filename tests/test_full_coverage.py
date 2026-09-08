@@ -1,7 +1,8 @@
-"""Full-coverage structural tests: every one of the 121 non-`Test`
-operations in the vendored spec must be genuinely reachable — described,
-schema-valid, and pre-flight-validatable through the gateway — regardless
-of whether it also has a hand-curated or auto-generated named tool.
+"""Full-coverage structural tests: every one of the 364 non-`Test`
+operations across all four vendored specs (shipment, construction, team,
+konshub) must be genuinely reachable — described, schema-valid, and
+pre-flight-validatable through the gateway — regardless of whether it also
+has a hand-curated or auto-generated named tool.
 
 This is the automated, permanent version of the manual check run during
 design: prove "no real gap" as a fact the test suite enforces, not a claim
@@ -20,16 +21,22 @@ from clm_mcp.spec.registry import OperationSummary, get_registry
 REGISTRY = get_registry()
 ALL_OPERATIONS = REGISTRY.list_operations()
 
-# Pinned counts: verified against the vendored spec during design (PLAN.md
+# Pinned counts: verified against the vendored specs during design (PLAN.md
 # "Verified facts") and re-confirmed after every fix in this pass. A
-# mismatch means the spec changed — re-run scripts/refresh_spec.py and
-# review what's different before updating these numbers.
-EXPECTED_TOTAL_OPERATIONS = 121
-EXPECTED_QUERY_OPERATIONS = 62
-EXPECTED_COMMAND_OPERATIONS = 59
+# mismatch means a spec changed — re-run scripts/refresh_spec.py and review
+# what's different before updating these numbers.
+EXPECTED_TOTAL_OPERATIONS = 364
+EXPECTED_QUERY_OPERATIONS = 183
+EXPECTED_COMMAND_OPERATIONS = 181
+EXPECTED_COUNTS_BY_SERVICE = {
+    "shipment": 121,
+    "construction": 96,
+    "team": 61,
+    "konshub": 86,
+}
 
 
-def test_total_operation_count_is_121_non_test_operations() -> None:
+def test_total_operation_count_is_364_non_test_operations() -> None:
     assert len(ALL_OPERATIONS) == EXPECTED_TOTAL_OPERATIONS
 
 
@@ -43,20 +50,39 @@ def test_query_and_command_counts_match_expected_split() -> None:
     assert query_count + command_count == EXPECTED_TOTAL_OPERATIONS
 
 
+def test_operation_count_matches_expected_split_per_service() -> None:
+    for slug, expected in EXPECTED_COUNTS_BY_SERVICE.items():
+        assert len(REGISTRY.list_operations(service=slug)) == expected
+
+
 def test_no_test_tag_operation_is_present() -> None:
     assert not any(o.tag == "Test" for o in ALL_OPERATIONS)
-    assert REGISTRY.get("Test/GetUserData") is None
+    for slug in EXPECTED_COUNTS_BY_SERVICE:
+        assert REGISTRY.get(f"{slug}/Test/GetUserData") is None
 
 
-#: Two operations in the vendored spec genuinely have no `summary` at all
-#: (verified directly against the raw JSON, not a parsing bug) —
-#: ShipmentCommand/UpdateShipmentStatus and ShipmentQuery/GetDraftShipmentPermission.
-#: Neither is curated, so this only affects clm_describe_operation's helpfulness
-#: for those two via the gateway; commands.py's tool-name fallback already covers
-#: the write one ("Execute {name} (a write operation)."). Not fixable client-side
-#: — the spec upstream simply omits it.
+#: Operations across the four vendored specs that genuinely have no
+#: `summary` at all (verified directly against the raw JSON, not a parsing
+#: bug). None of these are curated, so this only affects
+#: clm_describe_operation's helpfulness for them via the gateway;
+#: commands.py's tool-name fallback already covers the write ones ("Execute
+#: {name} (a write operation)."). Not fixable client-side — the spec
+#: upstream simply omits it.
 _OPERATIONS_WITHOUT_A_SUMMARY = frozenset(
-    {"ShipmentCommand/UpdateShipmentStatus", "ShipmentQuery/GetDraftShipmentPermission"}
+    {
+        "shipment/ShipmentCommand/UpdateShipmentStatus",
+        "shipment/ShipmentQuery/GetDraftShipmentPermission",
+        "construction/WikiCommand/GenerateWikiContentKeywords",
+        "construction/WikiCommand/SyncWikiContentEmbeddings",
+        "construction/WikiQuery/SearchWikiContentByKeyword",
+        "construction/WikiQuery/SearchWikiPagesSemantic",
+        "konshub/KonsHubShipmentCommand/DownloadBulkShipmentMergedPdf",
+        "konshub/KonsHubShipmentCommand/UpdateShipmentComment",
+        "konshub/KonsHubShipmentQuery/GetShipmentDetailsForMobile",
+        "konshub/ListViewQuery/GetShipmentForIncommingListViewForMobile",
+        "konshub/StorageCommissionQuery/GetCommissionedShipmentDailyCount",
+        "team/ClmTeamCommand/UpsertFeatureRoleMaps",
+    }
 )
 
 

@@ -132,6 +132,89 @@ def test_http_200_body_can_still_signal_business_failure(payload: dict[str, Any]
 
 
 # --------------------------------------------------------------------------
+# _ALWAYS_REPORTS_ISSUCCESS_FALSE_OPERATIONS: GetMaterialUsagesById always
+# reports IsSuccess=false, confirmed live via curl (with two different real
+# MaterialIds on two different sites, and independently by the user with
+# their own working payload) even on a genuine successful lookup. Data is
+# the only reliable signal: null means "not found", populated means success.
+# --------------------------------------------------------------------------
+
+_MATERIAL_USAGE_OP = "construction/ConstructionManagementQuery/GetMaterialUsagesById"
+
+
+def test_quirky_operation_with_data_and_bare_issuccess_false_is_treated_as_success() -> None:
+    payload: dict[str, Any] = {
+        "Data": {
+            "MaterialId": "d45f6d25-6686-4176-b757-77e919047689",
+            "MaterialName": "10",
+            "OpenShipmentCount": 1,
+            "ApprovedShipmentCount": 5,
+            "CompletedShipmentCount": 1,
+            "TotalShipmentCount": 7,
+        },
+        "IsSuccess": False,
+        "StatusCode": 0,
+        "ErrorMessage": None,
+        "PropertyName": None,
+        "ValidationErrors": {"IsValid": True, "Errors": [], "RuleSetsExecuted": None},
+        "TotalCount": 0,
+    }
+    result = unwrap_envelope(payload, operation_name=_MATERIAL_USAGE_OP)
+    assert result == payload["Data"]
+
+
+def test_quirky_operation_with_null_data_still_raises_tool_error() -> None:
+    """A genuinely nonexistent MaterialId still returns Data: null on this
+    operation — confirmed live — and must still be treated as a failure;
+    the override only ever applies when Data is actually populated."""
+    payload: dict[str, Any] = {
+        "Data": None,
+        "IsSuccess": False,
+        "StatusCode": 0,
+        "ErrorMessage": None,
+        "PropertyName": None,
+        "ValidationErrors": {"IsValid": True, "Errors": [], "RuleSetsExecuted": None},
+        "TotalCount": 0,
+    }
+    with pytest.raises(ToolError):
+        unwrap_envelope(payload, operation_name=_MATERIAL_USAGE_OP)
+
+
+def test_quirky_operation_override_does_not_apply_to_other_operations() -> None:
+    """The exact same bare-IsSuccess-false-with-Data shape on any other
+    operation must still raise — this is a narrow, name-scoped override,
+    not a general relaxation of the failure check."""
+    payload: dict[str, Any] = {
+        "Data": {"Id": "1"},
+        "IsSuccess": False,
+        "StatusCode": 0,
+        "ErrorMessage": None,
+        "PropertyName": None,
+        "ValidationErrors": {"IsValid": True, "Errors": [], "RuleSetsExecuted": None},
+        "TotalCount": 0,
+    }
+    with pytest.raises(ToolError):
+        unwrap_envelope(payload, operation_name="ConstructionManagementQuery/GetMaterialById")
+
+
+def test_quirky_operation_override_does_not_mask_a_real_error_message() -> None:
+    """If this operation ever *does* carry a real ErrorMessage alongside
+    IsSuccess=false, that's a genuine failure and must still raise — the
+    override only fires when there is no other failure signal at all."""
+    payload: dict[str, Any] = {
+        "Data": {"Id": "1"},
+        "IsSuccess": False,
+        "StatusCode": 400,
+        "ErrorMessage": "MaterialId is not a valid GUID.",
+        "PropertyName": None,
+        "ValidationErrors": {"IsValid": True, "Errors": [], "RuleSetsExecuted": None},
+        "TotalCount": 0,
+    }
+    with pytest.raises(ToolError, match="MaterialId is not a valid GUID"):
+        unwrap_envelope(payload, operation_name=_MATERIAL_USAGE_OP)
+
+
+# --------------------------------------------------------------------------
 # Non-dict bodies (e.g. a bare file/blob) pass through unchanged.
 # --------------------------------------------------------------------------
 

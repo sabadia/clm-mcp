@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from clm_mcp.enums import (
+    DOMAIN_ENUM_SERVICES,
     DOMAIN_ENUMS,
     ShipmentStatus,
     http_status_name,
@@ -21,6 +22,13 @@ def test_domain_enums_values_pinned() -> None:
     assert [m.value for m in DOMAIN_ENUMS["ShipmentGroupingType"]] == list(range(4))
     assert [m.value for m in DOMAIN_ENUMS["AccessType"]] == list(range(3))
     assert [m.value for m in DOMAIN_ENUMS["AvailableDateGetType"]] == [-1, 0, 1]
+
+
+def test_domain_enum_services_covers_every_domain_enum_and_defaults_to_shipment() -> None:
+    """All current DOMAIN_ENUMS entries are shipment's — the other three
+    services have no confirmed-range enums yet (see enums.py docstring)."""
+    assert set(DOMAIN_ENUM_SERVICES) == set(DOMAIN_ENUMS)
+    assert set(DOMAIN_ENUM_SERVICES.values()) == {"shipment"}
 
 
 def test_resolve_enum_value_accepts_member() -> None:

@@ -91,6 +91,7 @@ async def test_generated_command_tool_reports_missing_credentials_message() -> N
     settings = Settings(
         credentials_path="/nonexistent/credentials.json",
         enable_writes=True,
+        write_tools="shipment",
     )
     server = build_server(settings)
     register_all(server, settings)

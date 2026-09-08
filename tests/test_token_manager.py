@@ -196,7 +196,12 @@ async def test_invalid_refresh_token_falls_back_to_password_grant(
 async def test_no_credentials_raises_missing_credentials_error(
     http_client: httpx.AsyncClient,
 ) -> None:
-    settings = make_settings()  # no refresh_token, no username/password
+    # credentials_path must point somewhere that can't exist: the default
+    # (~/.config/clm-mcp/credentials.json) is a real path that `clm-mcp
+    # login` may have already populated on the machine running this test,
+    # which would make this test pass or fail based on developer-machine
+    # state instead of the code under test.
+    settings = make_settings(credentials_path="/nonexistent/credentials.json")
     manager = TokenManager(settings, http_client, clock=FakeClock())
 
     with pytest.raises(MissingCredentialsError):

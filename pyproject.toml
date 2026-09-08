@@ -1,7 +1,7 @@
 [project]
 name = "clm-mcp"
 version = "0.1.0"
-description = "MCP server exposing the SELISE CLM Shipment REST API (ClmShipmentWebService) to MCP clients"
+description = "MCP server exposing four SELISE CLM business services (shipment, construction, team, konshub) to MCP clients"
 readme = "README.md"
 requires-python = ">=3.13.3"
 dependencies = [

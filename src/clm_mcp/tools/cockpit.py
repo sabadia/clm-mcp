@@ -37,7 +37,12 @@ def register(mcp: MCPServer[AppContext]) -> None:
         ],
         site_id: _SiteIdParam = None,
     ) -> dict[str, Any]:
-        """Weekly shipment count grid for a site's active unloading zones."""
+        """Weekly shipment count grid for a site's active unloading zones.
+
+        The date window is capped at 92 days — the underlying API returns
+        one entry per day with no size limit of its own, so a wider window
+        raises a ToolError rather than returning an unbounded response.
+        """
         app = ctx.request_context.lifespan_context
         return await cockpit.get_cockpit_weekly_counts(
             app,

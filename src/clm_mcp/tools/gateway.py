@@ -28,7 +28,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
 from clm_mcp.server import AppContext
-from clm_mcp.spec.registry import Operation, get_registry
+from clm_mcp.spec.registry import AmbiguousOperationError, Operation, get_registry
 from clm_mcp.spec.shaping import strip_nulls
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
@@ -41,6 +41,7 @@ _REGISTRY = get_registry()
 
 class OperationSummaryOut(BaseModel):
     name: str
+    service: str
     method: str
     tag: str
     summary: str
@@ -48,6 +49,7 @@ class OperationSummaryOut(BaseModel):
 
 class OperationDescription(BaseModel):
     name: str
+    service: str
     method: str
     tag: str
     summary: str
@@ -58,7 +60,12 @@ class OperationDescription(BaseModel):
 
 
 def _get_operation_or_raise(operation: str) -> Operation:
-    op = _REGISTRY.get(operation)
+    # `resolve` (not `get`) so both the canonical `{service}/{tag}/{op}` form
+    # and the older unqualified `{tag}/{op}` form work — see registry.py.
+    try:
+        op = _REGISTRY.resolve(operation)
+    except AmbiguousOperationError as exc:
+        raise ToolError(str(exc)) from exc
     if op is None:
         raise ToolError(
             f"Unknown operation {operation!r}. Use clm_list_operations to see what's available."
@@ -89,18 +96,26 @@ def _validate_params(operation: Operation, params: dict[str, Any]) -> None:
 def register(mcp: MCPServer[AppContext]) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def clm_list_operations(
-        tag: str | None = None, search: str | None = None, limit: int = 50
+        service: str | None = None,
+        tag: str | None = None,
+        search: str | None = None,
+        limit: int = 50,
     ) -> list[OperationSummaryOut]:
-        """List CLM API operations reachable via clm_invoke.
+        """List CLM API operations reachable via clm_invoke, across all four
+        CLM services (shipment, construction, team, konshub).
 
-        Filter by exact `tag` (e.g. "ShipmentCommand") and/or a
-        case-insensitive `search` substring against the operation name or
-        summary. Use clm_describe_operation on a result to get its full
-        input schema before calling clm_invoke.
+        Filter by exact `service` (e.g. "konshub"), exact `tag` (e.g.
+        "ShipmentCommand"), and/or a case-insensitive `search` substring
+        against the operation name or summary. Use clm_describe_operation on
+        a result to get its full input schema before calling clm_invoke.
         """
-        results = _REGISTRY.list_operations(tag=tag, search=search)[: max(limit, 0)]
+        results = _REGISTRY.list_operations(service=service, tag=tag, search=search)[
+            : max(limit, 0)
+        ]
         return [
-            OperationSummaryOut(name=o.name, method=o.method, tag=o.tag, summary=o.summary)
+            OperationSummaryOut(
+                name=o.name, service=o.service, method=o.method, tag=o.tag, summary=o.summary
+            )
             for o in results
         ]
 
@@ -116,6 +131,7 @@ def register(mcp: MCPServer[AppContext]) -> None:
         op = _get_operation_or_raise(operation)
         return OperationDescription(
             name=op.name,
+            service=op.service,
             method=op.method,
             tag=op.tag,
             summary=op.summary,
@@ -129,7 +145,9 @@ def register(mcp: MCPServer[AppContext]) -> None:
     async def clm_invoke(
         ctx: Context[AppContext], operation: str, params: dict[str, Any] | None = None
     ) -> Any:
-        """Execute any operation listed by clm_list_operations.
+        """Execute any operation listed by clm_list_operations — the default
+        way to run a write (a `*Command` operation): no generated write tool
+        is required, see CLM_WRITE_TOOLS on tools/commands.py.
 
         `params` is validated against the operation's resolved schema
         before the HTTP call. A `*Command` operation (a write) is refused
@@ -142,7 +160,8 @@ def register(mcp: MCPServer[AppContext]) -> None:
             raise ToolError(
                 f"{operation} is a write operation (tag {op.tag!r}). This server was started "
                 "with CLM_ENABLE_WRITES=false (read-only mode) — unset it or set it to true to "
-                "enable writes."
+                "enable writes. (CLM_WRITE_TOOLS is unrelated: it only controls whether a "
+                "named per-operation tool also exists — it never gates execution.)"
             )
 
         resolved_params = params or {}

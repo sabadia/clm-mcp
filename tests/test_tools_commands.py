@@ -1,6 +1,6 @@
 """Integration tests for the auto-generated write tools (tools/commands.py):
-the CLM_ENABLE_WRITES gate, name collisions, verb-derived annotations, and
-one end-to-end call through the MCP SDK's in-process Client.
+the CLM_ENABLE_WRITES / CLM_WRITE_TOOLS gates, name collisions, verb-derived
+annotations, and one end-to-end call through the MCP SDK's in-process Client.
 """
 
 from __future__ import annotations
@@ -31,12 +31,19 @@ API_BASE_URL = "https://msblocks.selisestage.com/api/business-clm-shipment"
         ("GenerateUPTimelineExcelReport", "generate_up_timeline_excel_report"),
         ("DiscardShipment", "discard_shipment"),
         ("CreateOrUpdateEquipment", "create_or_update_equipment"),
+        ("KonsHubShipmentCommand", "konshub_shipment_command"),
+        ("CheckKonsHubAccess", "check_konshub_access"),
+        ("WareHouseCommand", "warehouse_command"),
+        ("CreateWareHouse", "create_warehouse"),
     ],
 )
 def test_snake_case_treats_consecutive_capitals_as_one_acronym(name: str, expected: str) -> None:
     """Regression test: a naive per-capital-letter split turned `PDF`/`UP` into
     `p_d_f`/`u_p`, producing wrong, undiscoverable tool names — found live when
-    `GenerateShipmentPDF`'s generated tool name didn't match what was called."""
+    `GenerateShipmentPDF`'s generated tool name didn't match what was called.
+    The `KonsHub*`/`WareHouse*` cases cover `_WORD_OVERRIDES`: without it, the
+    specs' internal-capital "KonsHub"/"WareHouse" would split into
+    `kons_hub`/`ware_house` instead of reading as one word each."""
     assert _snake_case(name) == expected
 
 
@@ -69,20 +76,35 @@ def mock_router() -> Generator[respx.MockRouter]:
         yield mock
 
 
-def build(enable_writes: bool) -> Client:
+def build(enable_writes: bool, write_tools: str = "all") -> Client:
     settings = Settings(
         refresh_token="rt",
         identity_token_url=IDENTITY_URL,
         api_base_url=API_BASE_URL,
         enable_writes=enable_writes,
+        write_tools=write_tools,
     )
     server = build_server(settings)
     register_all(server, settings)
     return Client(server)
 
 
-async def test_no_command_tools_when_writes_disabled(mock_router: respx.MockRouter) -> None:
-    client = build(enable_writes=False)
+async def test_no_command_tools_when_write_tools_unset_even_with_writes_enabled(
+    mock_router: respx.MockRouter,
+) -> None:
+    """The gateway-first default (PLAN.md "Approved design decisions"):
+    CLM_ENABLE_WRITES=true (the default) no longer implies any generated
+    write tool — CLM_WRITE_TOOLS must separately opt a service in."""
+    settings = Settings(
+        refresh_token="rt",
+        identity_token_url=IDENTITY_URL,
+        api_base_url=API_BASE_URL,
+        enable_writes=True,
+        write_tools="",
+    )
+    server = build_server(settings)
+    register_all(server, settings)
+    client = Client(server)
     async with client:
         tools = await client.list_tools()
 
@@ -90,10 +112,23 @@ async def test_no_command_tools_when_writes_disabled(mock_router: respx.MockRout
     assert generated == []
 
 
-async def test_one_tool_per_command_operation_when_writes_enabled(
+async def test_no_command_tools_when_writes_disabled_even_with_write_tools_set(
     mock_router: respx.MockRouter,
 ) -> None:
-    client = build(enable_writes=True)
+    """CLM_ENABLE_WRITES=false wins regardless of CLM_WRITE_TOOLS — there's
+    no point registering a tool that would always refuse to execute."""
+    client = build(enable_writes=False, write_tools="all")
+    async with client:
+        tools = await client.list_tools()
+
+    generated = [t for t in tools.tools if "_command_" in t.name]
+    assert generated == []
+
+
+async def test_one_tool_per_command_operation_when_all_services_opted_in(
+    mock_router: respx.MockRouter,
+) -> None:
+    client = build(enable_writes=True, write_tools="all")
     async with client:
         tools = await client.list_tools()
 
@@ -104,11 +139,29 @@ async def test_one_tool_per_command_operation_when_writes_enabled(
         1 for op in get_registry().list_operations() if op.tag.endswith("Command")
     )
     generated = [t for t in tools.tools if "_command_" in t.name]
-    assert len(generated) == command_op_count
+    assert len(generated) == command_op_count == 181
+
+
+async def test_write_tools_scoped_to_named_services_only(mock_router: respx.MockRouter) -> None:
+    client = build(enable_writes=True, write_tools="shipment,team")
+    async with client:
+        tools = await client.list_tools()
+
+    generated_ops = {
+        op.name
+        for op in get_registry().list_operations()
+        if op.tag.endswith("Command") and op.service in ("shipment", "team")
+    }
+    generated = [t for t in tools.tools if "_command_" in t.name]
+    assert len(generated) == len(generated_ops)
+    # None of konshub's or construction's write tools should be present.
+    assert not any(
+        name.startswith("clm_konshub_shipment_command_") for name in (t.name for t in generated)
+    )
 
 
 async def test_annotations_derived_from_verb(mock_router: respx.MockRouter) -> None:
-    client = build(enable_writes=True)
+    client = build(enable_writes=True, write_tools="all")
     async with client:
         tools = await client.list_tools()
     by_name = {t.name: t for t in tools.tools}
@@ -145,7 +198,7 @@ async def test_generated_tool_executes_end_to_end(mock_router: respx.MockRouter)
             },
         )
     )
-    client = build(enable_writes=True)
+    client = build(enable_writes=True, write_tools="shipment")
     async with client:
         result = await client.call_tool(
             "clm_shipment_command_discard_shipment", {"params": {"ShipmentId": "s1"}}
@@ -176,7 +229,7 @@ async def test_generated_tool_business_failure_raises_tool_error(
             },
         )
     )
-    client = build(enable_writes=True)
+    client = build(enable_writes=True, write_tools="shipment")
     async with client:
         result = await client.call_tool(
             "clm_shipment_command_discard_shipment", {"params": {"ShipmentId": "s1"}}
@@ -210,7 +263,7 @@ async def test_generated_tool_with_datetime_field_serializes_correctly(
             },
         )
     )
-    client = build(enable_writes=True)
+    client = build(enable_writes=True, write_tools="shipment")
     async with client:
         result = await client.call_tool(
             "clm_shipment_command_upsert_adhoc_shipment",

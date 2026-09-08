@@ -285,39 +285,70 @@ just kept in mind, when a coding agent has this server connected.
 - **Call `clm_whoami` before anything else in a session.** It confirms auth is actually working
   and its `site_id` is what every other tool defaults to — you rarely need to pass `site_id`
   yourself.
-- **Every operation in the API has a way to reach it — nothing is a dead end.** The curated
-  tools (`clm_get_shipment`, `clm_list_shipments`, ~20 of them) and the 59 write tools
-  (`clm_<tag>_command_<operation>`) are individually named, typed, and shape their responses to
-  fit context — prefer these when one exists. The ~44 remaining (less-common) query operations
-  have no dedicated tool, but are just as reachable via `clm_invoke` — that's a deliberate design
-  choice to keep the always-visible tool list small, not a coverage gap.
-- **Discover before you invoke:** `clm_list_operations(search="...")` →
+- **This server wraps four CLM services — shipment, construction, team, konshub — as one tool
+  catalog.** They share one login (one 7-minute access token) and one gateway
+  (`clm_list_operations`/`clm_describe_operation`/`clm_invoke`), each filterable by
+  `service`. `clm_whoami`'s `site_id` applies across all four.
+- **Every operation in all four APIs has a way to reach it — nothing is a dead end.** 42
+  curated tools (`clm_get_shipment`, `clm_list_teams`, `clm_list_konshub_deliveries`, ...) are
+  individually named, typed, and shape their responses to fit context — prefer these when one
+  exists. The remaining 322 operations (181 writes + 141 less-common queries) have no dedicated
+  tool by default, but are just as reachable via `clm_invoke` — that's a deliberate design choice to
+  keep the always-visible tool list small (registering a named tool for every write across all
+  four services would cost ~78,000 tokens of tool-definition context on every request), not a
+  coverage gap.
+- **Discover before you invoke:** `clm_list_operations(service="...", search="...")` →
   `clm_describe_operation(operation)` → `clm_invoke(operation, params)`. `clm_invoke` validates
   `params` against the real schema before making the HTTP call, so a malformed request fails
-  fast with a specific message instead of a wasted round-trip.
+  fast with a specific message instead of a wasted round-trip. An operation name like
+  `"ShipmentQuery/GetShipmentById"` works unqualified when it's unique across all four services
+  (true for every operation today); the fully qualified `"shipment/ShipmentQuery/GetShipmentById"`
+  form always works too.
 - **A large list response gets truncated, not silently dropped.** If a tool's result has
   `truncated: true`, its `note` field explains why and what to do — usually narrow your date
   range/filters, or pass `fields` to request only the columns you need per row.
-- **Status-like filters may need a raw int or the literal placeholder name.** Several fields
-  (`ShipmentStatus`, `LeanCardStatus`, `Severity`, ...) have no documented names yet — call
-  `clm_list_enums` to see the known integer ranges, and pass either the int or its
-  `"UNKNOWN_n"` placeholder name.
+- **Status-like filters may need a raw int or the literal placeholder name.** Several shipment
+  fields (`ShipmentStatus`, `LeanCardStatus`, `Severity`, ...) have no documented names yet —
+  call `clm_list_enums` to see the known integer ranges, and pass either the int or its
+  `"UNKNOWN_n"` placeholder name. Construction/team/konshub have similar undocumented int
+  fields (e.g. konshub's `ApprovalStatus`, team's `TeamType`) that aren't in `clm_list_enums`
+  yet — pass a raw int for those, checked against real data first if possible.
 - **`clm_list_material_handovers` requires a non-empty `status`, matched literally** — there
   is no "give me everything" default in the underlying API, and `"All"` is not a wildcard: it
   is accepted without a validation error but matches zero handovers (confirmed live against a
   site with 35 real handovers). Pass a real status value instead — `"InProgress"` is confirmed
   live to filter correctly.
-- **Writes are on by default** — every `*Command` operation already has its own
-  `clm_<tag>_command_<operation>` tool with zero setup. If one is missing, the user likely set
-  `CLM_ENABLE_WRITES=false` for this connection (a deliberate read-only mode); `clm_invoke`
-  enforces the same gate, so it isn't a way around it. Every write tool's annotations tell you
-  its risk regardless: `destructiveHint: true` means treat it like a delete, even if the name
-  doesn't say "delete" — an unrecognized verb defaults to that conservative label.
+- **Writes go through `clm_invoke` by default — no named write tool is needed.** A named
+  `clm_<tag>_command_<operation>` tool only exists if the user set `CLM_WRITE_TOOLS` for that
+  service; don't treat a missing one as a coverage gap, use `clm_invoke` instead. If a write
+  fails with "CLM_ENABLE_WRITES=false", that's the real read-only gate (independent of
+  `CLM_WRITE_TOOLS`) — the user deliberately started this connection unable to mutate data, and
+  `clm_invoke` enforces the exact same gate a named tool would. Every write tool's annotations
+  tell you its risk regardless of how it's invoked: `destructiveHint: true` means treat it like
+  a delete, even if the name doesn't say "delete" — an unrecognized verb defaults to that
+  conservative label.
 - **A tool error is the model's signal to adapt, not a bug report.** "Shipment not found",
   "'Status' must not be empty", and similar messages come straight from the CLM API (or this
   server's validation) and are meant to be acted on — retry with a corrected parameter, don't
   treat every `ToolError` as something to give up on.
-- **Two upstream endpoints are known to 500** regardless of input on the current staging
-  environment: `LeanCardQuery/GetWorkingPackages`(`Count`) and, for a nonexistent shipment id,
-  `TimelineQuery/GetShipmentTimelineById`. If you hit one of these, that's the live API, not this
-  server or your request.
+- **If a construction/team/konshub query fails ambiguously (a generic exception, or "site does
+  not exist"), try a different `site_id` before concluding the API is broken.** One specific
+  staging site has corrupted/incomplete data that breaks several otherwise-healthy operations —
+  confirmed by re-running the exact same operation against a properly-configured site and
+  getting a clean result both times. See README.md's "Known limitations" for the full,
+  corrected list (an earlier pass over-attributed this to universal upstream bugs before a
+  broader test caught the real cause).
+- **`TimelineQuery/GetShipmentTimelineById` 500s for a genuinely nonexistent shipment id** —
+  confirmed independent of site, this one is a real "should be a 404" defect.
+  `clm_get_shipment_timeline` surfaces it faithfully as a `ToolError`.
+- **`clm_list_site_responsible_persons`'s `total_count` doesn't track its real row count** —
+  a genuine, reproducible API defect; trust `data`/`returned` instead.
+- **`clm_get_material_usage` is slow (3–12s observed) and always succeeds despite the API's own
+  `IsSuccess: false` flag** — handled transparently (a populated result means it worked; only a
+  genuinely nonexistent material still errors), just don't be surprised by the latency.
+- **Team/konshub curated list tools, plus `clm_list_materials`, use one-based pagination**
+  (`page_number=1` is the first page) — different from shipment's zero-based convention. The
+  default is already correct per tool; only matters if you override `page_number` explicitly.
+- **`clm_get_cockpit_weekly_counts` refuses a date window over 92 days** — the API returns one
+  row per day with no cap of its own, so pass a narrow range (it's a "weekly" view; a few months
+  is already generous) rather than a multi-year span.

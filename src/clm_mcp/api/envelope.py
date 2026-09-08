@@ -26,9 +26,24 @@ API; `IsSuccess`, `ErrorMessages`, `ExternalError`, and
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 from mcp.server.mcpserver.exceptions import ToolError
+
+# Operations confirmed live (via raw `curl`, with two different real
+# MaterialIds on two different sites, and independently by the user with
+# their own working payload) to *always* report `IsSuccess: false` even on
+# a genuine, correct lookup — a defect in this specific operation's own
+# response, not a business failure. `Data` is the only reliable signal for
+# these: null means "not found" (confirmed: a nonexistent MaterialId
+# returns `Data: null` in ~0.8s), a populated object means success
+# (confirmed: a real MaterialId returns full, correct usage counts in
+# ~9s — this operation is also noticeably slower than most). Scoped to the
+# exact canonical operation name so this can never silently mask a real
+# failure on an unrelated operation.
+_ALWAYS_REPORTS_ISSUCCESS_FALSE_OPERATIONS: Final = frozenset(
+    {"construction/ConstructionManagementQuery/GetMaterialUsagesById"}
+)
 
 
 def unwrap_envelope(payload: Any, *, operation_name: str) -> Any:
@@ -46,6 +61,12 @@ def unwrap_envelope(payload: Any, *, operation_name: str) -> Any:
       - `ErrorMessages` is a non-empty list
       - `ExternalError` is a non-empty string
       - `ValidationErrors.IsValid` is `False`
+
+    One narrow exception: `_ALWAYS_REPORTS_ISSUCCESS_FALSE_OPERATIONS` lists
+    operations confirmed to always set `IsSuccess: false` even on success —
+    for exactly those, a populated `Data` overrides an otherwise-bare
+    `IsSuccess: false` (no error message, no failed validation) and is
+    treated as success instead.
     """
     if not isinstance(payload, dict):
         return payload
@@ -64,6 +85,18 @@ def unwrap_envelope(payload: Any, *, operation_name: str) -> Any:
         or bool(external_error)
         or validation_failed
     )
+
+    if (
+        failed
+        and operation_name in _ALWAYS_REPORTS_ISSUCCESS_FALSE_OPERATIONS
+        and is_success_flag is False
+        and not payload.get("ErrorMessage")
+        and not error_messages
+        and not external_error
+        and not validation_failed
+        and payload.get("Data") is not None
+    ):
+        failed = False
 
     if failed:
         message = _build_error_message(

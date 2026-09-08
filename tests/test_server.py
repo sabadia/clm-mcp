@@ -52,4 +52,4 @@ async def test_lifespan_falls_back_to_process_settings_when_none_given() -> None
 
     async with lifespan(server) as ctx:
         assert ctx.settings is not None
-        assert ctx.settings.api_base_url  # has some default, not empty
+        assert ctx.settings.base_url_for("shipment")  # has some default, not empty

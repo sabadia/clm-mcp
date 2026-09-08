@@ -85,9 +85,11 @@ async def test_clm_list_enums_lists_domain_enums(mocked_identity: respx.MockRout
 
     assert not result.is_error
     assert result.structured_content is not None
-    names = {entry["name"] for entry in result.structured_content["result"]}
+    entries = result.structured_content["result"]
+    names = {entry["name"] for entry in entries}
     assert "ShipmentStatus" in names
     assert "LeanCardStatus" in names
+    assert all(entry["service"] == "shipment" for entry in entries)
 
 
 async def test_meta_tools_are_registered_and_read_only(mocked_identity: respx.MockRouter) -> None:

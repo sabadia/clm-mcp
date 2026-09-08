@@ -169,7 +169,7 @@ class ClmApiClient:
     async def _send_once(
         self, operation: Operation, params: dict[str, Any] | None, access_token: str
     ) -> httpx.Response:
-        url = f"{self._settings.api_base_url}{operation.path}"
+        url = f"{self._settings.base_url_for(operation.service)}{operation.path}"
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
         if operation.method == "get":

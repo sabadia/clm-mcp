@@ -1,6 +1,6 @@
-"""Domain enums used by the CLM Shipment API.
+"""Domain enums used by the CLM APIs (currently: shipment only — see below).
 
-The OpenAPI spec exposes these as bare integers with **no member names or
+The OpenAPI specs expose these as bare integers with **no member names or
 descriptions** (see PLAN.md "Open items" — `ShipmentStatus` in particular is
 0-12 with meanings only the CLM team can confirm). Members below are
 labeled `UNKNOWN_<n>` as an explicit, visible placeholder — this is a
@@ -12,6 +12,19 @@ int values so a rename can't silently change a filter's behavior.
 `resolve_enum_value` lets every curated tool accept either an enum member
 name (case-insensitive) or a raw int for these fields, so a caller isn't
 blocked by not knowing the (currently unknown) real names.
+
+Construction, team, and konshub have their own named-but-valueless int
+fields too (e.g. konshub's `ApprovalStatus`/`CommissionedStatus`,
+team's `TeamType`/`RequestType`, construction's `LocationType`/`WKTType`
+— see PLAN.md "Other measured facts"). They are deliberately **not** stubbed
+here yet: `ShipmentStatus`'s 0-12 range came from an observed live
+`GetShipmentsCountForListView` count breakdown (real evidence of its
+cardinality), and no equivalent live evidence exists yet for the other
+three services' int fields — inventing a placeholder range with no
+evidence at all would be a worse violation of the "don't guess" policy than
+leaving them unstubbed. `clm_invoke`/`clm_describe_operation` still reach
+every one of these fields as a plain int; add real `IntEnum`s here once a
+live E2E pass (PLAN.md task 18) or a domain expert confirms their ranges.
 """
 
 from __future__ import annotations
@@ -101,6 +114,13 @@ DOMAIN_ENUMS: dict[str, type[IntEnum]] = {
     "AccessType": AccessType,
     "AvailableDateGetType": AvailableDateGetType,
 }
+
+# Which CLM service each DOMAIN_ENUMS entry belongs to — surfaced by
+# `clm_list_enums` (see tools/meta.py::EnumInfo.service) so a caller working
+# with a non-shipment service isn't left guessing whether a shipment enum
+# applies to it. Every current entry is shipment's; see this module's
+# docstring for why the other three services have no entries yet.
+DOMAIN_ENUM_SERVICES: dict[str, str] = dict.fromkeys(DOMAIN_ENUMS, "shipment")
 
 # HttpStatusCode (61 values, 100-511) appears only in `CommandResponse` /
 # response envelopes, never as a request parameter. Unlike the domain enums

@@ -16,7 +16,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
 from clm_mcp.auth.errors import ClmAuthError
-from clm_mcp.enums import DOMAIN_ENUMS
+from clm_mcp.enums import DOMAIN_ENUM_SERVICES, DOMAIN_ENUMS
 from clm_mcp.server import AppContext
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
@@ -39,6 +39,7 @@ class EnumInfo(BaseModel):
     """One domain enum's known members and their int values."""
 
     name: str
+    service: str
     members: dict[str, int]
 
 
@@ -85,9 +86,16 @@ def register(mcp: MCPServer[AppContext]) -> None:
         undocumented integer enums in the spec — real member names are not
         yet known (see PLAN.md). Tools accepting one of these enums take
         either the int value shown here or its placeholder name (e.g.
-        `"UNKNOWN_3"`) interchangeably.
+        `"UNKNOWN_3"`) interchangeably. Currently shipment-only — the other
+        three services have similar undocumented int fields but no
+        confirmed value range yet (see enums.py's module docstring); use
+        `clm_describe_operation` to see one of those fields' raw int type.
         """
         return [
-            EnumInfo(name=name, members={member.name: member.value for member in enum_cls})
+            EnumInfo(
+                name=name,
+                service=DOMAIN_ENUM_SERVICES[name],
+                members={member.name: member.value for member in enum_cls},
+            )
             for name, enum_cls in DOMAIN_ENUMS.items()
         ]

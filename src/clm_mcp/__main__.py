@@ -34,7 +34,7 @@ logger = get_logger(__name__)
 
 app = typer.Typer(
     name="clm-mcp",
-    help="MCP server for the SELISE CLM Shipment API.",
+    help="MCP server for the SELISE CLM APIs (shipment, construction, team, konshub).",
     add_completion=False,
     pretty_exceptions_show_locals=False,  # never risk a secret in a traceback
 )
@@ -57,6 +57,7 @@ def run(
 
     settings = get_settings()
     configure_logging(settings.log_level)
+    _validate_write_tools_or_exit(settings)
     server = build_server(settings)
     register_all(server, settings)
 
@@ -64,6 +65,19 @@ def run(
         server.run(transport="streamable-http", host=host, port=port, streamable_http_path=path)
     else:
         server.run(transport="stdio")
+
+
+def _validate_write_tools_or_exit(settings: Settings) -> None:
+    """Fail fast with a clean CLI message on a bad CLM_WRITE_TOOLS value,
+    rather than letting it surface later as an unhandled ValueError from
+    deep inside tools/commands.py::register (which still raises the same
+    check as a structural safety net — see config.py's write_tool_services).
+    """
+    try:
+        settings.write_tool_services()
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
