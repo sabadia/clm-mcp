@@ -114,12 +114,18 @@ def login(
         # (a 200 response carrying a fresh refresh_token) already *is* the
         # verification — hitting the identity endpoint a second time would
         # just be a redundant round-trip.
-        try:
-            username = input("CLM username (email): ").strip()
-            password = getpass.getpass("CLM password: ")
-        except (EOFError, KeyboardInterrupt):
-            typer.echo("\nAborted.", err=True)
-            raise typer.Exit(code=1) from None
+        if settings.username and settings.password:
+            # Already in the environment (CLM_USERNAME/CLM_USER + CLM_PASSWORD).
+            username = settings.username
+            password = settings.password.get_secret_value()
+            typer.echo(f"Using CLM credentials for {username} from the environment.")
+        else:
+            try:
+                username = input("CLM username (email): ").strip()
+                password = getpass.getpass("CLM password: ")
+            except (EOFError, KeyboardInterrupt):
+                typer.echo("\nAborted.", err=True)
+                raise typer.Exit(code=1) from None
         token = asyncio.run(_password_grant(settings, username, password))
 
     save_credentials(settings.credentials_path, token, username)

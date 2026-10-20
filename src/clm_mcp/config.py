@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from clm_mcp.services_catalog import DEFAULT_SERVICE, SERVICES
@@ -36,7 +36,11 @@ class Settings(BaseSettings):
     # --- Credentials (optional here; auth.token_manager also checks the
     # on-disk credential store written by `clm-mcp login`) ---
     refresh_token: SecretStr | None = Field(default=None)
-    username: str | None = Field(default=None)
+    # CLM_USER is accepted as an alias for CLM_USERNAME (CLM_USERNAME wins
+    # if both are set); "username" keeps `Settings(username=...)` working.
+    username: str | None = Field(
+        default=None, validation_alias=AliasChoices("CLM_USERNAME", "CLM_USER", "username")
+    )
     password: SecretStr | None = Field(default=None)
     credentials_path: Path = Field(default=DEFAULT_CREDENTIALS_PATH)
 

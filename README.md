@@ -84,6 +84,9 @@ CLM_USERNAME=you@example.com
 CLM_PASSWORD=<password>
 ```
 
+`CLM_USER` is accepted as an alias for `CLM_USERNAME`. With these set you don't need
+`clm-mcp login` at all; if you run it anyway, it uses them instead of prompting.
+
 If none of the above is configured, every tool call fails with a clear
 `ToolError` telling you to run `clm-mcp login`.
 

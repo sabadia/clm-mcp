@@ -103,3 +103,39 @@ def test_login_identity_service_unreachable() -> None:
     assert result.exit_code == 1
     assert "Could not reach" in result.output
     assert not settings.credentials_path.exists()
+
+
+def test_login_uses_env_credentials_without_prompting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With CLM_USER(NAME) + CLM_PASSWORD already in the environment, `login`
+    must use them directly rather than prompting for a username."""
+    monkeypatch.setenv("CLM_USER", "env@example.com")
+    monkeypatch.setenv("CLM_PASSWORD", "env-secret")
+    get_settings.cache_clear()
+
+    def _no_prompt(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("login prompted despite env credentials")
+
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    monkeypatch.setattr(cli_module.getpass, "getpass", _no_prompt)
+    settings = get_settings()
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.post(IDENTITY_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "access_token": "unused",
+                    "refresh_token": "env-rt",
+                    "expires_in": 420,
+                    "token_type": "bearer",
+                },
+            )
+        )
+        result = runner.invoke(cli_module.app, ["login"])
+
+    assert result.exit_code == 0, result.output
+    body = route.calls.last.request.content.decode()
+    assert "username=env%40example.com" in body
+    assert "password=env-secret" in body
+    saved = json.loads(settings.credentials_path.read_text())
+    assert saved["refresh_token"] == "env-rt"
+    assert saved["username"] == "env@example.com"
