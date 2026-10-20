@@ -33,6 +33,8 @@ class WhoAmIResult(BaseModel):
     tenant_id: str | None
     roles: list[str]
     token_expires_at: str
+    profile: str | None
+    api_root_url: str
 
 
 class EnumInfo(BaseModel):
@@ -50,7 +52,9 @@ def register(mcp: MCPServer[AppContext]) -> None:
 
         Call this first: it confirms authentication is actually working
         (triggering a token refresh if needed) and its `site_id` is the
-        default most other tools use for their `site_id` parameter.
+        default most other tools use for their `site_id` parameter. `profile`
+        and `api_root_url` show which CLM environment (e.g. stage vs. prod)
+        this server is connected to.
         """
         app = ctx.request_context.lifespan_context
         try:
@@ -76,6 +80,8 @@ def register(mcp: MCPServer[AppContext]) -> None:
             tenant_id=claims.tenant_id,
             roles=claims.role,
             token_expires_at=claims.expires_at.isoformat(),
+            profile=app.settings.profile,
+            api_root_url=app.settings.api_root_url,
         )
 
     @mcp.tool(annotations=_READ_ONLY)

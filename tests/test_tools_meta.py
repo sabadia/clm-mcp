@@ -105,3 +105,26 @@ async def test_meta_tools_are_registered_and_read_only(mocked_identity: respx.Mo
     assert "clm_list_enums" in by_name
     assert by_name["clm_whoami"].annotations is not None
     assert by_name["clm_whoami"].annotations.read_only_hint is True
+
+
+async def test_clm_whoami_reports_active_profile_and_api_root(
+    mocked_identity: respx.MockRouter,
+) -> None:
+    """With several environments configured, the model must be able to tell
+    which one it is talking to."""
+    settings = Settings(
+        refresh_token="rt",
+        identity_token_url=IDENTITY_URL,
+        profile="prod",
+        api_root_url="https://api.prod.test/api",
+    )
+    server = build_server(settings)
+    register_all(server, settings)
+
+    async with Client(server) as client:
+        result = await client.call_tool("clm_whoami", {})
+
+    assert not result.is_error
+    assert result.structured_content is not None
+    assert result.structured_content["profile"] == "prod"
+    assert result.structured_content["api_root_url"] == "https://api.prod.test/api"
