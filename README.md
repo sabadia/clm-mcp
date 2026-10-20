@@ -84,8 +84,51 @@ CLM_USERNAME=you@example.com
 CLM_PASSWORD=<password>
 ```
 
+`CLM_USER` is accepted as an alias for `CLM_USERNAME`. With these set you don't need
+`clm-mcp login` at all; if you run it anyway, it uses them instead of prompting.
+
 If none of the above is configured, every tool call fails with a clear
 `ToolError` telling you to run `clm-mcp login`.
+
+### Multiple environments (profiles)
+
+To switch between CLM environments (e.g. stage and prod), define named profiles
+in `~/.config/clm-mcp/profiles.toml` — copy
+[`profiles.example.toml`](profiles.example.toml) to start. Each profile sets its
+URLs (and any other setting) and **names the environment variables** its
+credentials come from, so secrets stay wherever you already keep them:
+
+```toml
+[profiles.prod]
+identity_token_url = "https://<prod-identity-host>/api/identity/v25/identity/token"
+identity_origin = "https://<prod-identity-host>/"
+api_root_url = "https://<prod-api-host>/api"
+username_env = "CLM_PROD_USER"
+password_env = "CLM_PROD_PASSWORD"
+```
+
+Select one with `--profile` (highest precedence), `CLM_PROFILE`, or a top-level
+`default = "prod"` in the file. One MCP server entry per environment:
+
+```bash
+claude mcp add clm-stage -- uv run --project /path/to/clm-mcp clm-mcp --profile stage
+claude mcp add clm-prod  -- uv run --project /path/to/clm-mcp clm-mcp --profile prod
+```
+
+Rules worth knowing:
+
+- A profile **never** falls back to the global `CLM_USERNAME`/`CLM_USER`/`CLM_PASSWORD`/
+  `CLM_REFRESH_TOKEN` — those may belong to another environment. If a referenced
+  variable (e.g. `CLM_PROD_PASSWORD`) is unset, startup fails with a clear error.
+- `password` and `refresh_token` may only be given via `password_env`/`refresh_token_env`,
+  never literally in the file.
+- `clm-mcp login --profile prod` stores its token in `credentials-prod.json`, separate
+  from every other profile.
+- Settings a profile leaves unset fall back to their `CLM_*` env var, then the default;
+  settings it does set win over the env var.
+- `clm_whoami` reports the active `profile` and `api_root_url`.
+
+With no profile selected, nothing changes: plain `CLM_*` variables and stage defaults.
 
 ## Run
 
@@ -133,8 +176,10 @@ All variables use the `CLM_` prefix (see `.env.example` for the full, commented 
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLM_REFRESH_TOKEN` | — | Refresh token (Option B) |
-| `CLM_USERNAME` / `CLM_PASSWORD` | — | Password grant (Option B) |
-| `CLM_CREDENTIALS_PATH` | `~/.config/clm-mcp/credentials.json` | Where `clm-mcp login` stores its token |
+| `CLM_USERNAME` (or `CLM_USER`) / `CLM_PASSWORD` | — | Password grant (Option B) |
+| `CLM_CREDENTIALS_PATH` | `~/.config/clm-mcp/credentials.json` | Where `clm-mcp login` stores its token (`credentials-<profile>.json` under a profile) |
+| `CLM_PROFILE` | — | Profile to use from the profiles file (overridden by `--profile`) — see [Multiple environments](#multiple-environments-profiles) |
+| `CLM_PROFILES_FILE` | `~/.config/clm-mcp/profiles.toml` | Location of the profiles file |
 | `CLM_API_ROOT_URL` | `https://msblocks.selisestage.com/api` | API root — each service's base is `{this}/business-clm-{shipment,construction,team,konshub}` |
 | `CLM_API_BASE_URL` | — | **Deprecated**: shipment-only base URL override, kept for pre-multi-service configs. Equivalent to `CLM_API_BASE_URL_OVERRIDES='{"shipment": "..."}'`. |
 | `CLM_API_BASE_URL_OVERRIDES` | `{}` | Per-service base URL overrides, as a JSON object: `{"konshub": "https://..."}` |

@@ -4,6 +4,7 @@
   clm-mcp --http --port 8000   run over streamable HTTP instead
   clm-mcp login                interactively store a refresh token
   clm-mcp login --refresh-token <token>   store a given refresh token directly
+  clm-mcp --profile prod [login]          use a named profile from profiles.toml
 
 `clm-mcp login` is the only place a password is ever collected — via
 `getpass` on the terminal, never as a tool argument — per the MCP
@@ -25,7 +26,7 @@ import typer
 
 from clm_mcp.auth.models import TokenErrorResponse, TokenResponse
 from clm_mcp.auth.store import save_credentials
-from clm_mcp.config import Settings, get_settings
+from clm_mcp.config import ProfileError, Settings, get_settings
 from clm_mcp.logging import configure_logging, get_logger
 from clm_mcp.server import build_server
 from clm_mcp.tools import register_all
@@ -40,9 +41,20 @@ app = typer.Typer(
 )
 
 
+ProfileOption = Annotated[
+    str | None,
+    typer.Option(
+        "--profile",
+        help="Named profile from the profiles file (default ~/.config/clm-mcp/profiles.toml). "
+        "Overrides CLM_PROFILE and the file's `default`.",
+    ),
+]
+
+
 @app.callback(invoke_without_command=True)
 def run(
     ctx: typer.Context,
+    profile: ProfileOption = None,
     http: Annotated[
         bool, typer.Option("--http", help="Serve over streamable HTTP instead of stdio.")
     ] = False,
@@ -53,9 +65,10 @@ def run(
     """Run the clm-mcp server. Defaults to stdio; use `clm-mcp login` first
     if no credentials are configured yet."""
     if ctx.invoked_subcommand is not None:
+        ctx.obj = profile  # so `clm-mcp --profile x login` works too
         return  # a subcommand (e.g. `login`) handles its own logic instead
 
-    settings = get_settings()
+    settings = _load_settings_or_exit(profile)
     configure_logging(settings.log_level)
     _validate_write_tools_or_exit(settings)
     server = build_server(settings)
@@ -65,6 +78,16 @@ def run(
         server.run(transport="streamable-http", host=host, port=port, streamable_http_path=path)
     else:
         server.run(transport="stdio")
+
+
+def _load_settings_or_exit(profile: str | None) -> Settings:
+    """Resolve Settings for `profile`, turning a bad profiles file or an
+    unknown profile name into a clean CLI message rather than a traceback."""
+    try:
+        return get_settings(profile)
+    except ProfileError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
 
 
 def _validate_write_tools_or_exit(settings: Settings) -> None:
@@ -82,6 +105,8 @@ def _validate_write_tools_or_exit(settings: Settings) -> None:
 
 @app.command()
 def login(
+    ctx: typer.Context,
+    profile: ProfileOption = None,
     refresh_token: Annotated[
         str | None,
         typer.Option(
@@ -97,9 +122,10 @@ def login(
     terminal (the password is never echoed and never leaves this process —
     it is exchanged for a refresh token and discarded). Either way, the
     refresh token is validated against the identity service before being
-    saved to ~/.config/clm-mcp/credentials.json (mode 0600).
+    saved to ~/.config/clm-mcp/credentials.json (mode 0600) — or
+    credentials-<profile>.json with --profile.
     """
-    settings = get_settings()
+    settings = _load_settings_or_exit(profile or ctx.obj)
     configure_logging(settings.log_level)
 
     if refresh_token:
@@ -114,12 +140,19 @@ def login(
         # (a 200 response carrying a fresh refresh_token) already *is* the
         # verification — hitting the identity endpoint a second time would
         # just be a redundant round-trip.
-        try:
-            username = input("CLM username (email): ").strip()
-            password = getpass.getpass("CLM password: ")
-        except (EOFError, KeyboardInterrupt):
-            typer.echo("\nAborted.", err=True)
-            raise typer.Exit(code=1) from None
+        if settings.username and settings.password:
+            # Already in the environment (CLM_USERNAME/CLM_USER + CLM_PASSWORD).
+            username = settings.username
+            password = settings.password.get_secret_value()
+            source = f"profile {settings.profile!r}" if settings.profile else "the environment"
+            typer.echo(f"Using CLM credentials for {username} from {source}.")
+        else:
+            try:
+                username = input("CLM username (email): ").strip()
+                password = getpass.getpass("CLM password: ")
+            except (EOFError, KeyboardInterrupt):
+                typer.echo("\nAborted.", err=True)
+                raise typer.Exit(code=1) from None
         token = asyncio.run(_password_grant(settings, username, password))
 
     save_credentials(settings.credentials_path, token, username)

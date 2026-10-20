@@ -82,3 +82,23 @@ def test_write_tool_services_rejects_unknown_slug() -> None:
     settings = Settings(write_tools="shipment,not-a-service")
     with pytest.raises(ValueError, match="unknown service"):
         settings.write_tool_services()
+
+
+def test_username_reads_clm_username(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLM_USERNAME", "user@example.com")
+    assert Settings().username == "user@example.com"
+
+
+def test_username_falls_back_to_clm_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLM_USER", "alias@example.com")
+    assert Settings().username == "alias@example.com"
+
+
+def test_clm_username_wins_over_clm_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLM_USERNAME", "primary@example.com")
+    monkeypatch.setenv("CLM_USER", "alias@example.com")
+    assert Settings().username == "primary@example.com"
+
+
+def test_username_still_settable_by_keyword() -> None:
+    assert Settings(username="kw@example.com").username == "kw@example.com"

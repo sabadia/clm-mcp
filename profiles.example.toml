@@ -1,0 +1,35 @@
+# Named profiles for clm-mcp — one per CLM environment.
+#
+# Copy to ~/.config/clm-mcp/profiles.toml (or point CLM_PROFILES_FILE at it),
+# then select a profile with `clm-mcp --profile <name>`, CLM_PROFILE=<name>,
+# or the `default` key below. With no profile selected, clm-mcp behaves
+# exactly as without this file (plain CLM_* env vars, stage defaults).
+#
+# Each [profiles.<name>] table may set any CLM_* setting by its lowercase
+# name without the prefix (api_root_url, enable_writes, log_level, ...).
+# Any setting can instead be read from a named environment variable by
+# adding `_env` — that is the ONLY way to supply password / refresh_token,
+# so this file never contains a secret.
+#
+# A profile never inherits credentials from the global CLM_USERNAME /
+# CLM_USER / CLM_PASSWORD / CLM_REFRESH_TOKEN, and `clm-mcp login --profile
+# <name>` stores its token in credentials-<name>.json. Settings a profile
+# leaves unset fall back to their CLM_* env var, then the built-in default.
+
+# default = "stage"
+
+[profiles.stage]
+identity_token_url = "https://clm.selisestage.com/api/identity/v25/identity/token"
+identity_origin = "https://clm.selisestage.com/"
+api_root_url = "https://msblocks.selisestage.com/api"
+username_env = "CLM_STAGE_USER"
+password_env = "CLM_STAGE_PASSWORD"
+
+[profiles.prod]
+identity_token_url = "https://<prod-identity-host>/api/identity/v25/identity/token"
+identity_origin = "https://<prod-identity-host>/"
+api_root_url = "https://<prod-api-host>/api"
+username_env = "CLM_PROD_USER"
+password_env = "CLM_PROD_PASSWORD"
+# refresh_token_env = "CLM_PROD_REFRESH_TOKEN"   # instead of username/password
+# enable_writes = false                          # e.g. keep prod read-only
